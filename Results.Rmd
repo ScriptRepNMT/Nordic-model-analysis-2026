@@ -1,0 +1,985 @@
+---
+title: "Results to Nordic Model Paper"
+author: "Blinded"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=T}
+if (!grepl("code",getwd())) setwd("code")
+if (!grepl("NordicModel",getwd())) setwd("NordicModel")
+filter <- dplyr::filter
+knitr::opts_chunk$set(cache.lazy=FALSE, echo=T, warnings=F,messages=F,errors=F,
+                      fig.width=7,fig.height=7)
+
+options(ggplot2.discrete.colour = see::okabeito_colors(c("light blue","amber","green","orange","red") ) %>% unname ) 
+options(ggplot2.discrete.fill   = see::okabeito_colors(c("light blue","amber","green","orange","red") ) %>% unname ) 
+
+require(tidyverse)
+require(ggtest)
+require(ggplot2)
+require(haven)
+require(labelled)
+require(ggridges)
+require(ggdensity)
+```
+
+```{r loading, include=T}
+load(file.path("..","..","data","withpredicted.rData"))
+wpred <- BTGINTT4
+
+load(file.path("..","..","data","btgintt4.RData"))
+
+BTGINTT4 <- BTGINTT4 %>% 
+  select(-(IDCNTRY:IDCNTPOP),-(IDTQUEST:ITMODE_TQ),-(IDPOP:IEADATE),-(TT4G01:TT4G08),-TT4G11,-contains("TT4G47"),
+         -contains("TT4G13"),-contains("TT4G16"),-contains("TT4G21"),-contains("TT4G23"),-contains("TT4G24"),-TT4G48A,
+         -contains("TT4G25"),-contains("TT4G35"),-TT4G36,-contains("TT4G37"),-contains("TT4G38"),-(TT4G39A:TT4G45) ,
+         -(TT4G59A:TT4G59F),-contains("TT4G62"),-contains("TT4G63"), -(TT4G73A:TT4G76D), -(TT4G82A:TT4G84),
+         -T4TAGEGR,-T4THEDAT,-T4TYQUAL,-T4TEMPWH,-T4CLSINF,-T4FASPR,-T4TNSCH,-T4TYEXPTS,-T4TYEXPTT,-T4TYEXPE,
+         -T4TYEXPO,-T4TCSIZE,-T4TLANG,-T4TLANGN,-contains("TT4G20"),-TT4G22,TCHWGT
+         ) %>% 
+  mutate(across(c(starts_with("TT4"),-TT4G49 ), to_factor )) %>%
+  select_if( function(x) any(!is.na(x)) ) %>%
+  mutate(TT4G09=case_when(grepl("Permanent",TT4G09)~1,!grepl("Permanent",TT4G09)~0),
+         TT4G12=case_when(grepl("Full-time",TT4G12)~1,grepl("71-90",TT4G12)~0.8,
+                          grepl("50-70",TT4G12)~0.6,grepl("less than 50",TT4G12)~0.25) ) %>% 
+  mutate(across(c(starts_with("T4") ), function(x) ifelse(x>9000,NA,unFactor(x))  ) ) %>% 
+  mutate(UseDigRes =data.frame(T4DRTIIA,T4DRTWCI) %>% rowMeans(na.rm=T) ,
+         Leadership=data.frame(T4INSTLE,T4RELEAD) %>% rowMeans(na.rm=T) ) %>% 
+  select(IDSCHOOL,IDTEACH,CNTRY,T4PDBR,T4EXINF,T4COLES,T4SECLS,T4SEINS,T4SEENG,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,T4DRTIIA,T4DRTWCI,T4INSTLE,T4RELEAD,UseDigRes,Leadership,TCHWGT) %>% 
+  mutate(English=ifelse(CNTRY %in% c("AUS","CAB","NZL","USA"      ) , 1 , 0 ) ,
+         Random =ifelse(CNTRY %in% c("AUS","CHL","SVN","BEL") , 1 , 0 ) ,
+         Asian  =ifelse(CNTRY %in% c("JPN","KOR","SGP","CSH"      ) , 1 , 0 ) ,
+         Nordic =ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL") , 1 , 0 )  
+         )
+```
+
+```{r }
+AGGR <- function(x, cutoff=4) {
+  VIM::aggr(x,combined=T,border=NA,plot=F) -> miss
+  print("Distribution of missing")
+  print(table(miss$count))
+  kp <- which(miss$count>cutoff)
+  miss$combinations <- miss$combinations[kp]
+  miss$percent      <- miss$percent[kp]
+  miss$count        <- miss$count[kp]
+  miss$tabcomb      <- miss$tabcomb[kp,]
+  plot(miss, combined=T, border=NA, cex.axis=0.75 )
+}
+
+AGGR(BTGINTT4 %>% select(T4PDBR,T4EXINF,T4COLES,T4SECLS,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,UseDigRes,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,Leadership,
+                         T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH) , cutoff=100 )
+```
+
+# Results
+
+- T4STUHAR - Student harassment in school - higher is more nordic... 
+- T4CHFAT - Change Fatigue
+- T4BLFDRT - Beliefs in digital resources and tools - lower is more nordic
+- T4STUD - Teacher-student relations - higher is more nordic
+- T4PBLE - Progression-based learning
+
+```{r Makegraphs}
+MakeGraphs <- function(var,lbl="Student harassment in school") {
+  wpred$TheVar <- wpred[[var]]
+  
+  hist.rug(wpred$TheVar,describe = F,main = lbl)
+  
+  ord <- wpred %>%
+    group_by(CNTRY) %>% 
+    mutate(m=mean(TheVar,na.rm=T)) %>% 
+    ungroup %>% 
+    with(unique(CNTRY[order(m)]))
+  
+  customggridges <- function(df) {
+    ggplot(df,aes(x=TheVar ,y=CNTRY,fill=IsNordic,color=IsNordic)) +
+      labs(y="Country", x=lbl) +
+      geom_density_ridges()+theme_bw()+
+      see::scale_color_okabeito(palette="black_first",order=c(9,9))+
+      see::scale_fill_okabeito(palette="black_first",order=c(1,3))+
+      theme(axis.title.y=element_text(size=10),
+            axis.text.y = element_text(color= ifelse(unique(df$CNTRY) %in% c("DNK","NOR","SWE","FIN","ISL"),"black","grey60"), 
+                                       face = ifelse(unique(df$CNTRY) %in% c("DNK","NOR","SWE","FIN","ISL"),"bold","plain"), 
+                                       size = 10) )+
+      labs(color="Country\ngroup",fill="Country\ngroup",x=lbl)
+  }
+  print(
+    wpred %>% filter(!is.na(TheVar)) %>% 
+             mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor) %>% 
+             group_by(CNTRY,IsNordic) %>% 
+             mutate(m=mean(TheVar,na.rm=T)) %>% 
+             ungroup %>% 
+             mutate(CNTRY=factor(CNTRY,unique(CNTRY[order(m)])) ) %>% 
+             arrange(CNTRY) %>% 
+      customggridges
+      
+  )
+  
+  customboxplot <- function(df) {
+    
+    ggplot(df,aes(y=m ,x=CNTRY,color=IsNordic,shape=IsNordic) ) +
+      geom_pointrange(aes(ymin=q25,ymax=q75),linewidth=3) +
+      geom_pointrange(aes(ymin=q05,ymax=q95),linewidth=1) +
+      geom_point(color="black") +
+      coord_flip() +
+      labs(y=lbl,x="") + theme_bw()+
+      see::scale_color_okabeito(palette="black_first",order=c(2,6))+
+      theme(axis.title.y=element_text(size=10),
+            axis.text.y = element_text(color= ifelse(unique(df$CNTRY) %in% c("DNK","NOR","SWE","FIN","ISL"),"black","grey60"), 
+                                       face = ifelse(unique(df$CNTRY) %in% c("DNK","NOR","SWE","FIN","ISL"),"bold","plain"), 
+                                       size = 10) )
+  }
+  print(
+    wpred %>% filter(!is.na(TheVar)) %>% 
+      mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor) %>% 
+      group_by(CNTRY,IsNordic) %>% 
+      summarize(m  =mean(    TheVar,na.rm=T),
+                q05=quantile(TheVar,0.05,na.rm=T),
+                q25=quantile(TheVar,0.25,na.rm=T),
+                q75=quantile(TheVar,0.75,na.rm=T),
+                q95=quantile(TheVar,0.95,na.rm=T),
+                .groups="drop") %>%
+      mutate(CNTRY=factor(CNTRY,ord) ) %>% 
+      arrange(CNTRY) %>% 
+      customboxplot
+  )
+}
+```
+
+In the following sections are there four graphs. The first shows just the overall distribution of the main variable of focus. The second shows country specific distributions. The third breaks down the distribution for the nordic countries versus non-nordic countries into twenty discrete points, where each point represents 5 % of the population. This gives a simpler appraoch for showning the distribution. The last figure has a black dot for means, wider lines that go from the 25th percentile to the 75th percentile and thinner lines that go from the 5th percentile to the 95th percentile.
+
+## T4STUHAR
+
+```{r fig.height=6.5,fig.width=5}
+MakeGraphs("T4STUHAR","Student harassment in school")
+```
+
+## T4CHFAT
+
+```{r fig.height=6.5,fig.width=5}
+MakeGraphs("T4CHFAT","Change fatigue")
+```
+
+## T4BLFDRT
+
+```{r fig.height=6.5,fig.width=5}
+MakeGraphs("T4BLFDRT","Beliefs in digital resources and tools")
+```
+
+## T4STUD
+
+```{r fig.height=6.5,fig.width=5}
+MakeGraphs("T4STUD","Teacher-student relations")
+```
+
+## T4PBLE
+
+```{r fig.height=6.5,fig.width=5}
+MakeGraphs("T4PBLE","Progression-based learning")
+```
+  
+# Individual Items
+
+Graphs in this section just show the distribution of responses to individual items.
+
+## T4STUHAR How strongly do you agree or disagree with the following statements about student harassment at this school? 
+
+- TT4G71A Students at this school get teased about their clothing or physical appearance. 
+- TT4G71B Students at this school get put down because of their ethnicity. 
+- TT4G71C Students at this school get teased about their gender expression and sexuality (e.g. comments about students not acting “masculine” or "feminine” enough, homophobic or transphobic remarks). 
+
+```{r}
+wpred %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),
+                         "Nordic","Other") %>% factor) %>%  
+  gather(var,val, TT4G71A,TT4G71B,TT4G71C) %>% 
+  count(IsNordic,var,val) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(val=factor(val) %>% factor(3:0) ) %>%
+  group_by(IsNordic,var) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  mutate(var=case_when(var=="TT4G71A"~"Students get teased\nabout their clothing or\nphysical appearance.",
+                       var=="TT4G71B"~"Students get put down\nbecause of their ethnicity.",
+                       var=="TT4G71C"~"Students get teased about\ntheir gender expression\nand sexuality" ),
+    val=case_when(val=="0"~"Strongly\ndisagree",
+                  val=="1"~"Disagree",
+                  val=="2"~"Agree",
+                  val=="3"~"Strongly\nagree"
+                  ) %>% 
+      factor(c("Strongly\ndisagree","Disagree","Agree","Strongly\nagree") %>% rev)
+     ) %>% 
+  ggplot(aes(x=IsNordic,y=pct, fill=val)) +
+    geom_col()+
+    geom_text(aes(label = scales::percent(pct,1)), 
+              position = position_stack(vjust = 0.5))+
+    facet_wrap(~var)+
+    see::scale_fill_okabeito()+
+    guides(fill=guide_legend(reverse=F))+
+    scale_y_continuous("Percent" ,
+                       labels=scales::percent)+
+  labs(fill="Answer\nCategory")
+```
+
+```{r}
+wpred %>% 
+  mutate(IsNordic=case_when(CNTRY %in% c("DNK")~"DNK",
+                            CNTRY %in% c("NOR")~"NOR",
+                            CNTRY %in% c("SWE")~"SWE",
+                            CNTRY %in% c("FIN")~"FIN",
+                            CNTRY %in% c("ISL")~"ISL",
+                            T~"Non-Nordic") %>% 
+           factor(c("DNK","NOR","SWE","FIN","ISL","Non-Nordic")) 
+         ) %>%  
+  gather(var,val, TT4G71A,TT4G71B,TT4G71C) %>% 
+  count(IsNordic,var,val) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(val=factor(val) %>% factor(3:0) ) %>%
+  group_by(IsNordic,var) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  mutate(var=case_when(var=="TT4G71A"~"Students get teased\nabout their clothing or\nphysical appearance.",
+                       var=="TT4G71B"~"Students get put down\nbecause of their ethnicity.",
+                       var=="TT4G71C"~"Students get teased about\ntheir gender expression\nand sexuality" ),
+    val=case_when(val=="0"~"Strongly\ndisagree",
+                  val=="1"~"Disagree",
+                  val=="2"~"Agree",
+                  val=="3"~"Strongly\nagree"
+                  ) %>% 
+      factor(c("Strongly\ndisagree","Disagree","Agree","Strongly\nagree") %>% rev)
+     ) %>% 
+  ggplot(aes(x=IsNordic,y=pct, fill=val)) +
+    geom_col()+
+    geom_text(aes(label = scales::percent(pct,1)), 
+              position = position_stack(vjust = 0.5))+
+    facet_wrap(~var)+
+    see::scale_fill_okabeito()+
+    guides(fill=guide_legend(reverse=F))+
+    scale_y_continuous("Percent" ,
+                       labels=scales::percent)+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))+
+  labs(fill="Answer\nCategory")
+```
+
+## T4CHFAT  Change fatigue How strongly do you agree or disagree with the following statements about changes in this school, regardless of whether these were initiated by the school or externally? 
+
+- TT4G72B I am tired of all the changes in this school. 
+- TT4G72C We are asked to change too many things in this school. 
+- TT4G72D It feels like we are always being asked to change something around here. 
+- TT4G72F I am asked to implement change initiatives without the necessary resources.
+
+```{r}
+wpred %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor) %>%  
+  gather(var,val, TT4G72B,TT4G72C,TT4G72D,TT4G72F ) %>% 
+  count(IsNordic,var,val) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(val=factor(val) %>% factor(3:0) ) %>%
+  group_by(IsNordic,var) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  mutate(var=case_when(
+    var=="TT4G72B"~"I am tired of all the\nchanges in this school.",
+    var=="TT4G72C"~"We are asked to change\ntoo many things in this school.",
+    var=="TT4G72D"~"It feels like we are always\nbeing asked to change something around here.",
+    var=="TT4G72F"~"I am asked to implement change\ninitiatives without the necessary resources."
+    ) ,
+    val=case_when(val=="0"~"Strongly\ndisagree",
+                  val=="1"~"Disagree",
+                  val=="2"~"Agree",
+                  val=="3"~"Strongly\nagree"
+                  ) %>% 
+      factor(c("Strongly\ndisagree","Disagree","Agree","Strongly\nagree") %>% rev)) %>% 
+  ggplot(aes(x=IsNordic,y=pct, fill=val)) +
+    geom_col()+
+    geom_text(aes(label = scales::percent(pct,1)), 
+              position = position_stack(vjust = 0.5))+
+    facet_wrap(~var)+labs(fill="Freq")+
+    see::scale_fill_okabeito()+
+    guides(fill=guide_legend(reverse=F))+
+    scale_y_continuous("Percent" ,
+                       labels=scales::percent)+
+  labs(fill="Answer\nCategory")
+```
+
+```{r}
+wpred %>% 
+  mutate(IsNordic=case_when(CNTRY %in% c("DNK")~"DNK",
+                            CNTRY %in% c("NOR")~"NOR",
+                            CNTRY %in% c("SWE")~"SWE",
+                            CNTRY %in% c("FIN")~"FIN",
+                            CNTRY %in% c("ISL")~"ISL",
+                            T~"Non-Nordic") %>% 
+           factor(c("DNK","NOR","SWE","FIN","ISL","Non-Nordic")) 
+         ) %>%  
+  gather(var,val, TT4G72B,TT4G72C,TT4G72D,TT4G72F ) %>% 
+  count(IsNordic,var,val) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(val=factor(val) %>% factor(3:0) ) %>%
+  group_by(IsNordic,var) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  mutate(var=case_when(
+    var=="TT4G72B"~"I am tired of all the\nchanges in this school.",
+    var=="TT4G72C"~"We are asked to change\ntoo many things in this school.",
+    var=="TT4G72D"~"It feels like we are always\nbeing asked to change something around here.",
+    var=="TT4G72F"~"I am asked to implement change\ninitiatives without the necessary resources."
+    ) ,
+    val=case_when(val=="0"~"Strongly\ndisagree",
+                  val=="1"~"Disagree",
+                  val=="2"~"Agree",
+                  val=="3"~"Strongly\nagree"
+                  ) %>% 
+      factor(c("Strongly\ndisagree","Disagree","Agree","Strongly\nagree") %>% rev)) %>% 
+  ggplot(aes(x=IsNordic,y=pct, fill=val)) +
+    geom_col()+
+    geom_text(aes(label = scales::percent(pct,1)), 
+              position = position_stack(vjust = 0.5))+
+    facet_wrap(~var)+labs(fill="Freq")+
+    see::scale_fill_okabeito()+
+    guides(fill=guide_legend(reverse=F))+
+    scale_y_continuous("Percent" ,
+                       labels=scales::percent)+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))+
+  labs(fill="Answer\nCategory")
+```
+
+## T4BLFDRT Thinking about the use of digital resources and tools for student learning, how strongly do you agree or disagree with the following statements? 
+    
+- TT4G34A The use of digital resources helps students develop greater interest in learning. 
+- TT4G34B The use of digital resources helps students develop skills to monitor their work. 
+- TT4G34C The use of digital resources helps improve students’ academic performance. 
+- TT4G34H The use of digital resources helps students collaborate on tasks efficiently. 
+
+```{r}
+wpred %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),
+                         "Nordic","Other") %>% factor) %>%  
+  gather(var,val, TT4G34A,TT4G34B,TT4G34C,TT4G34H ) %>% 
+  count(IsNordic,var,val) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(val=factor(val) %>% factor(3:0) ) %>%
+  group_by(IsNordic,var) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  mutate(var=case_when(
+    var=="TT4G34A"~"The use of digital\nresources helps students develop\ngreater interest in learning.",
+    var=="TT4G34B"~"The use of digital\nresources helps students develop\nskills to monitor their work.",
+    var=="TT4G34C"~"The use of digital\nresources helps improve students’\nacademic performance.",
+    var=="TT4G34H"~"The use of digital\nresources helps students collaborate\non tasks efficiently."
+    ) ,
+    val=case_when(val=="0"~"Strongly\ndisagree",
+                  val=="1"~"Disagree",
+                  val=="2"~"Agree",
+                  val=="3"~"Strongly\nagree"
+                  ) %>% 
+      factor(c("Strongly\ndisagree","Disagree","Agree","Strongly\nagree") %>% rev)
+    ) %>% 
+  ggplot(aes(x=IsNordic,y=pct, fill=val)) +
+    geom_col()+
+    geom_text(aes(label = scales::percent(pct,1)), 
+              position = position_stack(vjust = 0.5))+
+    facet_wrap(~var)+labs(fill="Response\nCategory")+
+    see::scale_fill_okabeito()+
+    guides(fill=guide_legend(reverse=F))+
+    scale_y_continuous("Percent" ,
+                       labels=scales::percent)+
+  labs(fill="Answer\nCategory")
+```
+
+```{r}
+wpred %>% 
+  mutate(IsNordic=case_when(CNTRY %in% c("DNK")~"DNK",
+                            CNTRY %in% c("NOR")~"NOR",
+                            CNTRY %in% c("SWE")~"SWE",
+                            CNTRY %in% c("FIN")~"FIN",
+                            CNTRY %in% c("ISL")~"ISL",
+                            T~"Non-Nordic") %>% 
+           factor(c("DNK","NOR","SWE","FIN","ISL","Non-Nordic")) 
+         ) %>%  
+  gather(var,val, TT4G34A,TT4G34B,TT4G34C,TT4G34H ) %>% 
+  count(IsNordic,var,val) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(val=factor(val) %>% factor(3:0) ) %>%
+  group_by(IsNordic,var) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  mutate(var=case_when(
+    var=="TT4G34A"~"The use of digital\nresources helps students develop\ngreater interest in learning.",
+    var=="TT4G34B"~"The use of digital\nresources helps students develop\nskills to monitor their work.",
+    var=="TT4G34C"~"The use of digital\nresources helps improve students’\nacademic performance.",
+    var=="TT4G34H"~"The use of digital\nresources helps students collaborate\non tasks efficiently."
+    ) ,
+    val=case_when(val=="0"~"Strongly\ndisagree",
+                  val=="1"~"Disagree",
+                  val=="2"~"Agree",
+                  val=="3"~"Strongly\nagree"
+                  ) %>% 
+      factor(c("Strongly\ndisagree","Disagree","Agree","Strongly\nagree") %>% rev)
+    ) %>% 
+  ggplot(aes(x=IsNordic,y=pct, fill=val)) +
+    geom_col()+
+    geom_text(aes(label = scales::percent(pct,1)), 
+              position = position_stack(vjust = 0.5))+
+    facet_wrap(~var)+labs(fill="Response\nCategory")+
+    see::scale_fill_okabeito()+
+    guides(fill=guide_legend(reverse=F))+
+    scale_y_continuous("Percent" ,
+                       labels=scales::percent)+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))+
+  labs(fill="Answer\nCategory")
+```
+
+## T4STUD How strongly do you agree or disagree with the following statements about what happens in this school? 
+
+- TT4G65A Teachers and students usually get on well with each other. 
+- TT4G65B Most teachers believe that the students’ well-being is important. 
+- TT4G65C Most teachers are interested in what students have to say. 
+- TT4G65D If a student needs extra assistance, the school provides it. 
+
+```{r}
+wpred %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),
+                         "Nordic","Other") %>% factor) %>%  
+  gather(var,val, TT4G65A,TT4G65B,TT4G65C,TT4G65D ) %>% 
+  count(IsNordic,var,val) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(val=factor(val) %>% factor(3:0) ) %>%
+  group_by(IsNordic,var) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  mutate(var=case_when(
+    var=="TT4G65A"~"Teachers and students\nusually get on well\nwith each other.",
+    var=="TT4G65B"~"Most teachers believe\nthat the students’ well-being\nis important.",
+    var=="TT4G65C"~"Most teachers are\ninterested in what\nstudents have to say.",
+    var=="TT4G65D"~"If a student needs\nextra assistance, the\nschool provides it."
+    ),
+    val=case_when(val=="0"~"Strongly\ndisagree",
+                  val=="1"~"Disagree",
+                  val=="2"~"Agree",
+                  val=="3"~"Strongly\nagree"
+                  ) %>% 
+      factor(c("Strongly\ndisagree","Disagree","Agree","Strongly\nagree") %>% rev) ) %>% 
+  ggplot(aes(x=IsNordic,y=pct, fill=val)) +
+    geom_text(aes(label = scales::percent(pct,1)), 
+              position = position_stack(vjust = 0.5))+
+    geom_col()+
+    facet_wrap(~var)+
+    see::scale_fill_okabeito()+
+    guides(fill=guide_legend(reverse=F))+
+    scale_y_continuous("Percent" ,
+                       labels=scales::percent)+
+  labs(fill="Answer\nCategory")
+```
+
+```{r}
+wpred %>% 
+  mutate(IsNordic=case_when(CNTRY %in% c("DNK")~"DNK",
+                            CNTRY %in% c("NOR")~"NOR",
+                            CNTRY %in% c("SWE")~"SWE",
+                            CNTRY %in% c("FIN")~"FIN",
+                            CNTRY %in% c("ISL")~"ISL",
+                            T~"Non-Nordic") %>% 
+           factor(c("DNK","NOR","SWE","FIN","ISL","Non-Nordic")) 
+         ) %>%  
+  gather(var,val, TT4G65A,TT4G65B,TT4G65C,TT4G65D ) %>% 
+  count(IsNordic,var,val) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(val=factor(val) %>% factor(3:0) ) %>%
+  group_by(IsNordic,var) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  mutate(var=case_when(
+    var=="TT4G65A"~"Teachers and students\nusually get on well\nwith each other.",
+    var=="TT4G65B"~"Most teachers believe\nthat the students’ well-being\nis important.",
+    var=="TT4G65C"~"Most teachers are\ninterested in what\nstudents have to say.",
+    var=="TT4G65D"~"If a student needs\nextra assistance, the\nschool provides it."
+    ),
+    val=case_when(val=="0"~"Strongly\ndisagree",
+                  val=="1"~"Disagree",
+                  val=="2"~"Agree",
+                  val=="3"~"Strongly\nagree"
+                  ) %>% 
+      factor(c("Strongly\ndisagree","Disagree","Agree","Strongly\nagree") %>% rev) ) %>% 
+  ggplot(aes(x=IsNordic,y=pct, fill=val)) +
+    geom_col()+
+    geom_text(aes(label = scales::percent(pct,1)), 
+              position = position_stack(vjust = 0.5))+
+    facet_wrap(~var)+
+    see::scale_fill_okabeito()+
+    guides(fill=guide_legend(reverse=F))+
+    scale_y_continuous("Percent" ,
+                       labels=scales::percent)+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))+
+  labs(fill="Answer\nCategory")
+```
+ 
+## T4PBLE Progression-based learning Thinking about your teaching in the <target class>, how often do you perform the following actions? 
+
+- TT4G56A I let students review multiple examples to practice the steps involved in a procedure or skill. 
+- TT4G56B I select tasks for student practice that gradually increase in difficulty. 
+- TT4G56C I prepare students for difficulties that can occur while practicing a procedure or skill. 
+- TT4G56D I let students practise similar tasks until I know that every student has understood the subject matter. 
+
+```{r}
+wpred %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),
+                         "Nordic","Other") %>% factor) %>%  
+  gather(var,val, TT4G56A,TT4G56B,TT4G56C,TT4G56D) %>% 
+  count(IsNordic,var,val) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(val=factor(val) %>% factor(3:0) ) %>%
+  group_by(IsNordic,var) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  mutate(var=case_when(
+    var=="TT4G56A"~"I let students review multiple examples to practice the steps involved in a procedure or skill.",
+    var=="TT4G56B"~"I select tasks for student practice that gradually increase in difficulty.",
+    var=="TT4G56C"~"I prepare students for difficulties that can occur while practicing a procedure or skill.",
+    var=="TT4G56D"~"I let students practise similar tasks until I know that every student has understood the subject matter."
+    ) ,
+    val=case_when(val=="0"~"Never or\nalmost never",
+                  val=="1"~"Occasionally",
+                  val=="2"~"Frequently",
+                  val=="3"~"Always"
+                  ) %>% 
+      factor(c("Never or\nalmost never","Occasionally","Frequently","Always") %>% rev)
+    ) %>% 
+  ggplot(aes(x=IsNordic,y=pct, fill=val)) +
+    geom_text(aes(label = scales::percent(pct,1)), 
+              position = position_stack(vjust = 0.5))+
+    geom_col()+
+    facet_wrap(~var)+
+    see::scale_fill_okabeito()+labs(fill="Freq")+
+    guides(fill=guide_legend(reverse=F))+
+    scale_y_continuous("Percent" ,
+                       labels=scales::percent)+
+  labs(fill="Answer\nCategory")
+```
+
+```{r}
+wpred %>% 
+  mutate(IsNordic=case_when(CNTRY %in% c("DNK")~"DNK",
+                            CNTRY %in% c("NOR")~"NOR",
+                            CNTRY %in% c("SWE")~"SWE",
+                            CNTRY %in% c("FIN")~"FIN",
+                            CNTRY %in% c("ISL")~"ISL",
+                            T~"Non-Nordic") %>% 
+           factor(c("DNK","NOR","SWE","FIN","ISL","Non-Nordic")) 
+         ) %>%  
+  gather(var,val, TT4G56A,TT4G56B,TT4G56C,TT4G56D) %>% 
+  count(IsNordic,var,val) %>% 
+  filter(!is.na(val)) %>% 
+  mutate(val=factor(val) %>% factor(3:0) ) %>%
+  group_by(IsNordic,var) %>% 
+  mutate(pct=n/sum(n)) %>% 
+  mutate(var=case_when(
+    var=="TT4G56A"~"I let students review multiple examples to practice the steps involved in a procedure or skill.",
+    var=="TT4G56B"~"I select tasks for student practice that gradually increase in difficulty.",
+    var=="TT4G56C"~"I prepare students for difficulties that can occur while practicing a procedure or skill.",
+    var=="TT4G56D"~"I let students practise similar tasks until I know that every student has understood the subject matter."
+    ) ,
+    val=case_when(val=="0"~"Never or\nalmost never",
+                  val=="1"~"Occasionally",
+                  val=="2"~"Frequently",
+                  val=="3"~"Always"
+                  ) %>% 
+      factor(c("Never or\nalmost never","Occasionally","Frequently","Always") %>% rev)
+    ) %>% 
+  ggplot(aes(x=IsNordic,y=pct, fill=val)) +
+    geom_col()+
+    geom_text(aes(label = scales::percent(pct,1)), 
+              position = position_stack(vjust = 0.5))+
+    facet_wrap(~var)+
+    see::scale_fill_okabeito()+labs(fill="Freq")+
+    guides(fill=guide_legend(reverse=F))+
+    scale_y_continuous("Percent" ,
+                       labels=scales::percent)+ 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))+
+  labs(fill="Answer\nCategory")
+```
+
+# Interactions
+
+Each possible interaction has up to six graphs
+
+- the first shows the average value of the variable on the y-axis based on values of the x-axis. Here the difference between the two lines shows the difference between nordic and non-nordic countries. The interaction can be seen by variation in the distance between lines across values of the x-axis
+- the second graph simply adds in markers that explicitly show the distance between lines to emphasize this feature.
+- the third graph shows the same thing as the last graph for individual variables (i.e., the 5th, 25th, mean, 75th, and 95th percentiles) for both the nordics and the non-nordics. Here, there are lines connecting the mean, 25th percentile, and 75th percentile to show differences and and the same figures are provided for both below and over the mean for the second variable. Looking across panes of the graph to see differences in the slope of the line shows interactions... We could reduce this to just look at means and/or to have more panes if that is desirable.
+
+## T4CHFAT:T4STUHAR
+
+```{r Int399, }
+wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4CHFAT)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor,
+         T4CHFAT=CutForReg(T4CHFAT,3) %>% factor(labels=c("Q1","Q2","Q3") ) )  %>% 
+  lmer(T4STUHAR~0+T4CHFAT:IsNordic+(1|CNTRY)+(1|IDSCHOOL) , .) %>% 
+  broom.mixed::tidy() %>% 
+  filter(is.na(group)) %>% 
+  separate(term,c("T4CHFAT","Nordic"),sep=":") %>%
+  mutate(Nordic=sub("IsNordic","",Nordic) ,
+         T4CHFAT=sub("T4CHFAT","",T4CHFAT)) %>% 
+  ggplot( aes(y=estimate,ymin=estimate-2*std.error,ymax=estimate+2*std.error, x=T4CHFAT, color=Nordic) ) +
+    theme_bw()+
+    geom_pointrange(position=position_dodge(0.4) ) +
+    geom_errorbar(aes(x=1,ymin=estimate[T4CHFAT=="Q1" & Nordic=="Nordic"],ymax=estimate[T4CHFAT=="Q1" & Nordic=="Other"]),color="grey20",width=0.1) +
+    geom_errorbar(aes(x=2,ymin=estimate[T4CHFAT=="Q2" & Nordic=="Nordic"],ymax=estimate[T4CHFAT=="Q2" & Nordic=="Other"]),color="grey20",width=0.1) +
+    geom_errorbar(aes(x=3,ymin=estimate[T4CHFAT=="Q3" & Nordic=="Nordic"],ymax=estimate[T4CHFAT=="Q3" & Nordic=="Other"]),color="grey20",width=0.1) +
+    geom_text(aes(x=1,y=mean(estimate[T4CHFAT=="Q1"]),
+                  label=round( abs(estimate[T4CHFAT=="Q1" & Nordic=="Nordic"]-
+                                     estimate[T4CHFAT=="Q1" & Nordic=="Other"] ), 1) ),color="grey20",
+              position=position_nudge(x=0.15)) +
+    geom_text(aes(x=2,y=mean(estimate[T4CHFAT=="Q2"]),
+                  label=round( abs(estimate[T4CHFAT=="Q2" & Nordic=="Nordic"]-
+                                     estimate[T4CHFAT=="Q2" & Nordic=="Other"] ), 1) ),color="grey20",
+              position=position_nudge(x=0.15)) +
+    geom_text(aes(x=3,y=mean(estimate[T4CHFAT=="Q3"]),
+                  label=round( abs(estimate[T4CHFAT=="Q3" & Nordic=="Nordic"]-
+                                     estimate[T4CHFAT=="Q3" & Nordic=="Other"] ), 1) ),color="grey20",
+              position=position_nudge(x=0.15)) 
+              
+                    
+tmp <- wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4CHFAT)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor)  %>% 
+  ggplot( aes(y=T4STUHAR ,x=T4CHFAT,color=IsNordic) ) +
+  geom_smooth(se=F,linewidth=3) +
+  see::scale_color_okabeito(palette="black_first",order=c(3,8))
+tmp
+
+plot_data <- ggplot_build(tmp)$data[[1]]
+connectors <- plot_data %>%
+  select(x, y, group) %>%
+  tidyr::pivot_wider(names_from = group, values_from = y) %>%
+  filter(!is.na(`1`) & !is.na(`2`)) 
+labeled_connectors <- connectors %>%
+  mutate(
+    diff = round(abs(`1` - `2`), 2),  # The "length" measure
+    mid_y = (`1` + `2`) / 2            # Midpoint for text placement
+  ) %>%
+  # Only label every 10th point to avoid clutter
+  filter(row_number() %% 10 == 5)
+
+tmp + geom_ribbon(data = connectors, 
+                 aes(xmin = x,x= x, xmax = x, ymin = `1`,y = `1`, ymax = `2`),
+                 inherit.aes=FALSE, color="grey30", alpha = 0.7)+
+  geom_smooth(se=F,linewidth=3)+
+  geom_text(data = labeled_connectors,
+            aes(x = x, y = mid_y, label = diff),
+            inherit.aes = FALSE, 
+            hjust = 0, # Shift text slightly to the right of the line
+            size = 3, 
+            color = "blue")
+
+p <- wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4CHFAT)) %>% 
+    mutate(IsNordic=case_when(
+      CNTRY %in% c("DNK","NOR","SWE","FIN","ISL")~"Nordic",
+      T~"Non-Nordic") %>% factor,
+           T4STUHAR=CutForReg(T4STUHAR, 2) %>% 
+        factor(labels=c("Below mean","Over mean") ) ) %>% 
+    group_by(IsNordic,T4STUHAR) %>% 
+    summarize(m  =mean(    T4CHFAT,na.rm=T),
+              q05=quantile(T4CHFAT,0.05,na.rm=T),
+              q25=quantile(T4CHFAT,0.25,na.rm=T),
+              q75=quantile(T4CHFAT,0.75,na.rm=T),
+              q95=quantile(T4CHFAT,0.95,na.rm=T),
+              .groups="drop") 
+p %>% 
+    ggplot( aes(y=m ,x=IsNordic,color=IsNordic) ) +
+  geom_pointrange(aes(ymin=q25,ymax=q75),linewidth=3) +
+  geom_pointrange(aes(ymin=q05,ymax=q95),linewidth=1) +
+  geom_point(color="black") +
+  coord_flip() + facet_wrap(~T4STUHAR)+
+  guides(color=F)+
+  labs(y="T4CHFAT",title="T4STUHAR") +
+    see::scale_color_okabeito(palette="black_first",order=c(3,8))+
+  geom_segment(aes(x=1,xend=2,y=`Non-Nordic`,yend=`Nordic`), inherit.aes=F,
+                   data=p %>% select(IsNordic,T4STUHAR,m) %>% 
+                 spread(IsNordic,m) )+
+  geom_segment(aes(x=1,xend=2,y=`Non-Nordic`,yend=`Nordic`), inherit.aes=F,
+                   data=p %>% select(IsNordic,T4STUHAR,q25   ) %>% 
+                 spread(IsNordic,q25) )+
+  geom_segment(aes(x=1,xend=2,y=`Non-Nordic`,yend=`Nordic`), inherit.aes=F,
+                   data=p %>% select(IsNordic,T4STUHAR,q75) %>% 
+                 spread(IsNordic,q75) )
+```
+
+## T4STUD T4STUHAR
+
+- T4STUHAR - Student harassment in school
+- T4STUD - Teacher-student relations
+
+```{r Int299, }
+
+wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4STUD)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor,
+         T4STUD=CutForReg(T4STUD,3) %>% factor(labels=c("Q1","Q2","Q3") ) )  %>% 
+  lmer(T4STUHAR~0+T4STUD:IsNordic+(1|CNTRY)+(1|IDSCHOOL) , .) %>% 
+  broom.mixed::tidy() %>% 
+  filter(is.na(group)) %>% 
+  separate(term,c("T4STUD","Nordic"),sep=":") %>%
+  mutate(Nordic=sub("IsNordic","",Nordic) ,
+         T4STUD=sub("T4STUD","",T4STUD)) %>% 
+  ggplot( aes(y=estimate,ymin=estimate-2*std.error,ymax=estimate+2*std.error, x=T4STUD, color=Nordic) ) +
+    theme_bw()+
+    geom_pointrange(position=position_dodge(0.4) ) +
+    geom_errorbar(aes(x=1,ymin=estimate[T4STUD=="Q1" & Nordic=="Nordic"],ymax=estimate[T4STUD=="Q1" & Nordic=="Other"]),color="grey20",width=0.1) +
+    geom_errorbar(aes(x=2,ymin=estimate[T4STUD=="Q2" & Nordic=="Nordic"],ymax=estimate[T4STUD=="Q2" & Nordic=="Other"]),color="grey20",width=0.1) +
+    geom_errorbar(aes(x=3,ymin=estimate[T4STUD=="Q3" & Nordic=="Nordic"],ymax=estimate[T4STUD=="Q3" & Nordic=="Other"]),color="grey20",width=0.1) +
+    geom_text(aes(x=1,y=mean(estimate[T4STUD=="Q1"]),
+                  label=sprintf("%.2f", abs(estimate[T4STUD=="Q1" & Nordic=="Nordic"]-
+                                     estimate[T4STUD=="Q1" & Nordic=="Other"] )) ),color="grey20",
+              position=position_nudge(x=0.15)) +
+    geom_text(aes(x=2,y=mean(estimate[T4STUD=="Q2"]),
+                  label=sprintf("%.2f", abs(estimate[T4STUD=="Q2" & Nordic=="Nordic"]-
+                                     estimate[T4STUD=="Q2" & Nordic=="Other"] )) ),color="grey20",
+              position=position_nudge(x=0.15)) +
+    geom_text(aes(x=3,y=mean(estimate[T4STUD=="Q3"]),
+                  label=sprintf("%.2f", abs(estimate[T4STUD=="Q3" & Nordic=="Nordic"]-
+                                     estimate[T4STUD=="Q3" & Nordic=="Other"] )) ),color="grey20",
+              position=position_nudge(x=0.15)) +
+  labs(x="Terciles of Teacher-student relations (T4STUD)",
+       y="Average value of Student harassment (T4STUHAR)",
+       color="Country\ngrouping")
+              
+                    
+
+tmp <- wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4STUD)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor)  %>% 
+  ggplot( aes(y=T4STUHAR ,x=T4STUD,color=IsNordic) ) +
+  geom_smooth(se=F,linewidth=3) +
+  see::scale_color_okabeito(palette="black_first",order=c(3,8))
+tmp
+
+plot_data <- ggplot_build(tmp)$data[[1]]
+connectors <- plot_data %>%
+  select(x, y, group) %>%
+  tidyr::pivot_wider(names_from = group, values_from = y) %>%
+  filter(!is.na(`1`) & !is.na(`2`)) 
+labeled_connectors <- connectors %>%
+  mutate(
+    diff = round(abs(`1` - `2`), 2),  # The "length" measure
+    mid_y = (`1` + `2`) / 2            # Midpoint for text placement
+  ) %>%
+  # Only label every 10th point to avoid clutter
+  filter(row_number() %% 10 == 5)
+
+tmp + geom_ribbon(data = connectors, 
+                 aes(xmin = x,x= x, xmax = x, ymin = `1`,y = `1`, ymax = `2`),
+                 inherit.aes=FALSE, color="grey30", alpha = 0.7)+
+  geom_smooth(se=F,linewidth=3)+
+  geom_text(data = labeled_connectors,
+            aes(x = x, y = mid_y, label = diff),
+            inherit.aes = FALSE, 
+            hjust = 0, # Shift text slightly to the right of the line
+            size = 3, 
+            color = "blue")
+
+
+wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4STUD)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor)  %>% 
+  ggplot(aes(y=T4STUHAR ,x=T4STUD)) + 
+  facet_wrap(~IsNordic)+
+  geom_hex(bins=20,aes(fill = after_stat(density))) +
+  scale_fill_gradient(trans="log")
+
+wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4STUD)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor)  %>% 
+  ggplot(aes(y=T4STUHAR ,x=T4STUD)) +
+  geom_hex(alpha=0.3)+
+  geom_hdr_lines(probs = c(0.9, 0.5, alpha = 0.35) )+
+  facet_wrap(~IsNordic)+
+  theme(legend.position = "none") +
+  scale_fill_gradient(trans="log")
+
+
+wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4STUD)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor)  %>% 
+  ggplot(aes(y=T4STUHAR ,x=T4FULFIL,color=CNTRY)) +
+  geom_point(alpha=0.5, shape=".")+
+  stat_ellipse()+
+  facet_wrap(~IsNordic)+
+  theme(legend.position = "none")
+
+p <- wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4STUD)) %>% 
+    mutate(IsNordic=case_when(
+      CNTRY %in% c("DNK","NOR","SWE","FIN","ISL")~"Nordic",
+      T~"Non-Nordic") %>% factor,
+           T4STUHAR=CutForReg(T4STUHAR, 2) %>% 
+        factor(labels=c("Below mean","Over mean") ) ) %>% 
+    group_by(IsNordic,T4STUHAR) %>% 
+    summarize(m  =mean(    T4STUD,na.rm=T),
+              q05=quantile(T4STUD,0.05,na.rm=T),
+              q25=quantile(T4STUD,0.25,na.rm=T),
+              q75=quantile(T4STUD,0.75,na.rm=T),
+              q95=quantile(T4STUD,0.95,na.rm=T),
+              .groups="drop") 
+p %>% 
+    ggplot( aes(y=m ,x=IsNordic,color=IsNordic) ) +
+  geom_pointrange(aes(ymin=q25,ymax=q75),linewidth=3) +
+  geom_pointrange(aes(ymin=q05,ymax=q95),linewidth=1) +
+  geom_point(color="black") +
+  coord_flip() + facet_wrap(~T4STUHAR)+
+  guides(color=F)+
+  labs(y="T4STUD",title="T4STUHAR") +
+    see::scale_color_okabeito(palette="black_first",order=c(3,8))+
+  geom_segment(aes(x=1,xend=2,y=`Non-Nordic`,yend=`Nordic`), inherit.aes=F,
+                   data=p %>% select(IsNordic,T4STUHAR,m) %>% 
+                 spread(IsNordic,m) )+
+  geom_segment(aes(x=1,xend=2,y=`Non-Nordic`,yend=`Nordic`), inherit.aes=F,
+                   data=p %>% select(IsNordic,T4STUHAR,q25   ) %>% 
+                 spread(IsNordic,q25) )+
+  geom_segment(aes(x=1,xend=2,y=`Non-Nordic`,yend=`Nordic`), inherit.aes=F,
+                   data=p %>% select(IsNordic,T4STUHAR,q75) %>% 
+                 spread(IsNordic,q75) )
+```
+
+## T4BLFDRT T4STUHAR
+
+- T4STUHAR - Student harassment in school
+- T4BLFDRT","Beliefs in digital resources and tools
+
+```{r Int02, }
+wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4BLFDRT)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor,
+         T4BLFDRT=CutForReg(T4BLFDRT,3) %>% factor(labels=c("Q1","Q2","Q3") ) )  %>% 
+  lmer(T4STUHAR~0+T4BLFDRT:IsNordic+(1|CNTRY)+(1|IDSCHOOL) , .) %>% 
+  broom.mixed::tidy() %>% 
+  filter(is.na(group)) %>% 
+  separate(term,c("T4BLFDRT","Nordic"),sep=":") %>%
+  mutate(Nordic=sub("IsNordic","",Nordic) ,
+         T4BLFDRT=sub("T4BLFDRT","",T4BLFDRT)) %>% 
+  ggplot( aes(y=estimate,ymin=estimate-2*std.error,ymax=estimate+2*std.error, x=T4BLFDRT, color=Nordic) ) +
+    theme_bw()+
+    geom_pointrange(position=position_dodge(0.4) ) +
+    geom_errorbar(aes(x=1,ymin=estimate[T4BLFDRT=="Q1" & Nordic=="Nordic"],ymax=estimate[T4BLFDRT=="Q1" & Nordic=="Other"]),color="grey20",width=0.1) +
+    geom_errorbar(aes(x=2,ymin=estimate[T4BLFDRT=="Q2" & Nordic=="Nordic"],ymax=estimate[T4BLFDRT=="Q2" & Nordic=="Other"]),color="grey20",width=0.1) +
+    geom_errorbar(aes(x=3,ymin=estimate[T4BLFDRT=="Q3" & Nordic=="Nordic"],ymax=estimate[T4BLFDRT=="Q3" & Nordic=="Other"]),color="grey20",width=0.1) +
+    geom_text(aes(x=1,y=mean(estimate[T4BLFDRT=="Q1"]),
+                  label=sprintf("%.2f", abs(estimate[T4BLFDRT=="Q1" & Nordic=="Nordic"]-
+                                     estimate[T4BLFDRT=="Q1" & Nordic=="Other"] )) ),color="grey20",
+              position=position_nudge(x=0.15)) +
+    geom_text(aes(x=2,y=mean(estimate[T4BLFDRT=="Q2"]),
+                  label=sprintf("%.2f", abs(estimate[T4BLFDRT=="Q2" & Nordic=="Nordic"]-
+                                     estimate[T4BLFDRT=="Q2" & Nordic=="Other"] )) ),color="grey20",
+              position=position_nudge(x=0.15)) +
+    geom_text(aes(x=3,y=mean(estimate[T4BLFDRT=="Q3"]),
+                  label=sprintf("%.2f", abs(estimate[T4BLFDRT=="Q3" & Nordic=="Nordic"]-
+                                     estimate[T4BLFDRT=="Q3" & Nordic=="Other"] )) ),color="grey20",
+              position=position_nudge(x=0.15)) 
+              
+
+tmp <- wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4BLFDRT)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor)  %>% 
+  ggplot( aes(y=T4STUHAR ,x=T4BLFDRT,color=IsNordic) ) +
+  geom_smooth(se=F,linewidth=3) +
+  see::scale_color_okabeito(palette="black_first",order=c(3,8))
+tmp
+
+plot_data <- ggplot_build(tmp)$data[[1]]
+connectors <- plot_data %>%
+  select(x, y, group) %>%
+  tidyr::pivot_wider(names_from = group, values_from = y) %>%
+  filter(!is.na(`1`) & !is.na(`2`)) 
+labeled_connectors <- connectors %>%
+  mutate(
+    diff = round(abs(`1` - `2`), 2),  # The "length" measure
+    mid_y = (`1` + `2`) / 2            # Midpoint for text placement
+  ) %>%
+  # Only label every 10th point to avoid clutter
+  filter(row_number() %% 10 == 5)
+
+tmp + geom_ribbon(data = connectors, 
+                 aes(xmin = x,x= x, xmax = x, ymin = `1`,y = `1`, ymax = `2`),
+                 inherit.aes=FALSE, color="grey30", alpha = 0.7)+
+  geom_smooth(se=F,linewidth=3)+
+  geom_text(data = labeled_connectors,
+            aes(x = x, y = mid_y, label = diff),
+            inherit.aes = FALSE, 
+            hjust = 0, # Shift text slightly to the right of the line
+            size = 3, 
+            color = "blue")
+
+
+wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4BLFDRT)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor)  %>% 
+  ggplot(aes(y=T4STUHAR ,x=T4BLFDRT)) + 
+  facet_wrap(~IsNordic)+
+  geom_hex(bins=20,aes(fill = after_stat(density))) +
+  scale_fill_gradient(trans="log")
+
+wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4BLFDRT)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor)  %>% 
+  ggplot(aes(y=T4STUHAR ,x=T4BLFDRT)) +
+  geom_hex(alpha=0.3)+
+  geom_hdr_lines(probs = c(0.9, 0.5, alpha = 0.35) )+
+  facet_wrap(~IsNordic)+
+  theme(legend.position = "none") +
+  scale_fill_gradient(trans="log")
+
+
+wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4BLFDRT)) %>% 
+  mutate(IsNordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Other") %>% factor)  %>% 
+  ggplot(aes(y=T4STUHAR ,x=T4FULFIL,color=CNTRY)) +
+  geom_point(alpha=0.5, shape=".")+
+  stat_ellipse()+
+  facet_wrap(~IsNordic)+
+  theme(legend.position = "none")
+
+p <- wpred %>% filter(!is.na(T4STUHAR) & !is.na(T4BLFDRT)) %>% 
+    mutate(IsNordic=case_when(
+      CNTRY %in% c("DNK","NOR","SWE","FIN","ISL")~"Nordic",
+      T~"Non-Nordic") %>% factor,
+           T4STUHAR=CutForReg(T4STUHAR, 2) %>% 
+        factor(labels=c("Below mean","Over mean") ) ) %>% 
+    group_by(IsNordic,T4STUHAR) %>% 
+    summarize(m  =mean(    T4BLFDRT,na.rm=T),
+              q05=quantile(T4BLFDRT,0.05,na.rm=T),
+              q25=quantile(T4BLFDRT,0.25,na.rm=T),
+              q75=quantile(T4BLFDRT,0.75,na.rm=T),
+              q95=quantile(T4BLFDRT,0.95,na.rm=T),
+              .groups="drop") 
+p %>% 
+    ggplot( aes(y=m ,x=IsNordic,color=IsNordic) ) +
+  geom_pointrange(aes(ymin=q25,ymax=q75),linewidth=3) +
+  geom_pointrange(aes(ymin=q05,ymax=q95),linewidth=1) +
+  geom_point(color="black") +
+  coord_flip() + facet_wrap(~T4STUHAR)+
+  guides(color=F)+
+  labs(y="T4BLFDRT",title="T4STUHAR") +
+    see::scale_color_okabeito(palette="black_first",order=c(3,8))+
+  geom_segment(aes(x=1,xend=2,y=`Non-Nordic`,yend=`Nordic`), inherit.aes=F,
+                   data=p %>% select(IsNordic,T4STUHAR,m) %>% 
+                 spread(IsNordic,m) )+
+  geom_segment(aes(x=1,xend=2,y=`Non-Nordic`,yend=`Nordic`), inherit.aes=F,
+                   data=p %>% select(IsNordic,T4STUHAR,q25   ) %>% 
+                 spread(IsNordic,q25) )+
+  geom_segment(aes(x=1,xend=2,y=`Non-Nordic`,yend=`Nordic`), inherit.aes=F,
+                   data=p %>% select(IsNordic,T4STUHAR,q75) %>% 
+                 spread(IsNordic,q75) )
+```
+
+
+# ROCIT models graph
+
+```{r}
+load(file.path("..","..","data","ROCIT_Asian_Test.rData"))
+load(file.path("..","..","data","ROCIT_English_Test.rData"))
+load(file.path("..","..","data","ROCIT_Random_Test.rData"))
+load(file.path("..","..","data","ROCIT_Nordic_Test.rData"))
+
+ggplot() +
+  geom_line(aes(x=ROCIT_Asian$`FPR/1-Specificity`,y=ROCIT_Asian$`TPR/Sensitivity/Recall`,
+                color="Asian",linetype="Asian"),linewidth=1.2)+
+  geom_line(aes(x=ROCIT_English$`FPR/1-Specificity`,y=ROCIT_English$`TPR/Sensitivity/Recall`,
+                color="English",linetype="English"),linewidth=1.2)+
+  geom_line(aes(x=ROCIT_Nordic$`FPR/1-Specificity`,y=ROCIT_Nordic$`TPR/Sensitivity/Recall`,
+                color="Nordic",linetype="Nordic"),linewidth=1.2)+
+  geom_line(aes(x=ROCIT_Random$`FPR/1-Specificity`,y=ROCIT_Random$`TPR/Sensitivity/Recall`,
+                color="Random",linetype="Random"),linewidth=1.2)+
+  geom_abline(intercept=0,slope=1,color="black")+
+  labs(x="False Positive Rate",y="True Positive Rate",color="Model",linetype="Model" )+
+  theme_bw()
+
+
+```
+
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
