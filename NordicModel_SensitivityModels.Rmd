@@ -1,0 +1,505 @@
+---
+title: "TALIS Nordic Model - Sensitivity analyses for other sets of countries"
+author: "Blinded"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# setwd("m:/NordicModel/code/NordicModel")
+options(future.globals.maxSize = 6000 * 1024^2)
+require(dbarts)
+require(bartMan )
+require(tidyverse)
+require(ggplot2)
+require(survey)
+require(coda)
+require(ROCit)
+knitr::opts_chunk$set(cache.lazy=FALSE, echo=T, warnings=F)
+filter <- dplyr::filter
+select <- dplyr::select
+require(haven)
+require(arm)
+require(tinytex)
+require(haven)
+require(labelled)
+library(bartXViz)
+source("FixedExtractTrees.r")
+
+options(ggplot2.discrete.colour = see::okabeito_colors(c("light blue","amber","green","orange","red") ) %>% unname ) 
+options(ggplot2.discrete.fill   = see::okabeito_colors(c("light blue","amber","green","orange","red") ) %>% unname ) 
+
+paste. <- function(...) paste(... , sep=".")
+hist.rug <- function(TheVar, IDnames = NULL, ylim=NULL, breaks="Sturges", ...,
+                     main=paste("Var=",deparse(substitute(TheVar))), describe=T) {
+  if (describe) try(print(psych::describe(TheVar)))
+  par(cex.lab = 1, cex.axis = 1.2, lwd = 2)
+  suppressWarnings(HistData <- hist(TheVar, plot=F,breaks=breaks, ... ))
+  if (is.null(ylim))
+    HistData = hist(TheVar, ylim=c(0, max(HistData$counts)*1.2),breaks=breaks, main=main,... )
+  else
+    HistData = hist(TheVar,breaks=breaks, main=main, ... )
+  rug(TheVar, col = "red")
+  if (any(class(TheVar)=="Date")) {
+    DensityData = density(na.omit(TheVar))
+  } else DensityData = density(as.numeric(na.omit(TheVar)))
+  lines(DensityData$x, DensityData$y * (max(HistData$counts)/max(DensityData$y)), col = "blue")
+  mtext(sprintf("M: %.2f\nSD: %.2f",mean(TheVar,na.rm=TRUE),sd(TheVar,na.rm=TRUE)),side=3, line=-2,adj = 1)
+
+  if (!is.null(IDnames)) identify(TheVar, rep(0, length(TheVar)), labels = IDnames)
+}
+unFactor  <- function(x) return(if (is.factor(x)) as.numeric(levels(x)[x]) else x )
+CutForReg <- function(x,num) cut(x,UniqueQuant(x,num),include.lowest=TRUE)
+UniqueQuant <- function(x, n=10) unique(quantile(x,0:n/n,na.rm=TRUE,type=1)) # Helper in other functions around regressions
+
+```
+
+```{r loading, include=FALSE, cache=T}
+load(file.path("..","..","data","btgintt4.RData"))
+
+BTGINTT4 <- BTGINTT4 %>% 
+  select(-(IDCNTRY:IDCNTPOP),-(IDTQUEST:ITMODE_TQ),-(IDPOP:IEADATE),-(TT4G01:TT4G08),-TT4G11,-contains("TT4G47"),
+         -contains("TT4G13"),-contains("TT4G16"),-contains("TT4G21"),-contains("TT4G23"),-contains("TT4G24"),-TT4G48A,
+         -contains("TT4G25"),-contains("TT4G35"),-TT4G36,-contains("TT4G37"),-contains("TT4G38"),-(TT4G39A:TT4G45) ,
+         -(TT4G59A:TT4G59F),-contains("TT4G62"),-contains("TT4G63"), -(TT4G73A:TT4G76D), -(TT4G82A:TT4G84),
+         -T4TAGEGR,-T4THEDAT,-T4TYQUAL,-T4TEMPWH,-T4CLSINF,-T4FASPR,-T4TNSCH,-T4TYEXPTS,-T4TYEXPTT,-T4TYEXPE,
+         -T4TYEXPO,-T4TCSIZE,-T4TLANG,-T4TLANGN,-contains("TT4G20"),-TT4G22,TCHWGT
+         ) %>% 
+  mutate(across(c(starts_with("TT4"),-TT4G49 ), to_factor )) %>%
+  select_if( function(x) any(!is.na(x)) ) %>%
+  mutate(TT4G09=case_when(grepl("Permanent",TT4G09)~1,!grepl("Permanent",TT4G09)~0),
+         TT4G12=case_when(grepl("Full-time",TT4G12)~1,grepl("71-90",TT4G12)~0.8,
+                          grepl("50-70",TT4G12)~0.6,grepl("less than 50",TT4G12)~0.25) ) %>% 
+  mutate(across(c(starts_with("T4") ), function(x) ifelse(x>9000,NA,unFactor(x))  ) ) %>% 
+  mutate(UseDigRes =data.frame(T4DRTIIA,T4DRTWCI) %>% rowMeans(na.rm=T) ,
+         Leadership=data.frame(T4INSTLE,T4RELEAD) %>% rowMeans(na.rm=T) ) %>% 
+  select(IDSCHOOL,IDTEACH,CNTRY,T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,T4DRTIIA,T4DRTWCI,T4INSTLE,T4RELEAD,UseDigRes,Leadership,TCHWGT) %>% 
+  mutate( # Set all missing values to an extreme case, which lets the bart model easily isolate those cases in prediction model 
+    across( T4EXINF:Leadership , function(x) ifelse(is.na(x), 0, x ) ) ) %>% 
+  mutate(Nordic =ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN") , 1,0) ,
+         English=ifelse(CNTRY %in% c("AUS","CAB","NZL","USA") , 1,0) ,
+         Random =ifelse(CNTRY %in% c("AUS","CHL","SVN","BEL") , 1,0) ,
+         Asian  =ifelse(CNTRY %in% c("JPN","KOR","SGP","CSH") , 1,0)  
+         )
+# describe(BTGINTT4)
+```
+
+Create training and test data
+
+```{r CreateTrainingTest}
+set.seed(1312)
+
+CountrySizes <- BTGINTT4 %>% 
+  count(CNTRY) %>% 
+  mutate(Nover=n-4000) %>% 
+  mutate( # select all over 4000 or 10%, whichever is bigger to be test data. this limits training data size for large countries, which was suggested by a reviewer
+    Ntrain=ifelse(Nover/n <= 0.1, as.integer(n*0.1) , Nover)) %>% 
+  select(-Nover,-n)
+
+BTGINTT4 %>%
+  count(CNTRY,IDSCHOOL) %>% 
+  merge(CountrySizes) %>% 
+  mutate(train=0) %>% 
+  group_by(CNTRY) %>% 
+  group_modify(~{
+    while ( sum(.x$train) < .x$Ntrain[1] ) {
+      a <- sample(1:nrow(.x),1)
+      .x[a, "train"] <- .x[a,"n"]
+    }
+    .x
+  } ) %>% 
+  as.data.frame %>% 
+  filter(train>0) %>% 
+  with( paste.(CNTRY,IDSCHOOL) ) ->
+  TestSchools
+
+Test <- BTGINTT4 %>% filter(paste.(CNTRY,IDSCHOOL) %in% TestSchools )
+BTGINTT4 <- BTGINTT4 %>% filter(!( paste.(CNTRY,IDSCHOOL) %in% TestSchools ) )
+```
+
+# Run Random country Models
+
+```{r runmodelRandom, cache=F}
+X = BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership) %>% as.matrix
+
+model <- bart(
+  x.train = as.matrix(X),
+  y.train = factor(BTGINTT4$Random),
+  ntree = 50, power=2, base=0.99, k=1.5,
+  nskip = 10000, ndpost = 6000, keepevery = 50,
+  nchain = 8, nthread = 8,
+  seed=561,
+  keeptrees = TRUE
+)
+```
+
+```{r codeconvergeRandom2, cache=T,eval=T}
+macro_predictions <- split( plogis(model$yhat.train) %>% apply(c(1), mean) %>% t ,
+                            rep(1:model$call$nchain , each=model$call$ndpost/model$call$keepevery) )
+
+mcmc_chains <- lapply(1:length(macro_predictions), function(i) {
+  mcmc(macro_predictions[[i]])
+}) %>%  as.mcmc.list
+
+gelman.diag(mcmc_chains)
+print(coda::effectiveSize(mcmc_chains))
+plot(mcmc_chains)
+
+```
+
+## Results
+
+```{r runModel6Random, cache=T}
+predicted <- predict(model, BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership)   )
+predictedTest <- predict(model, Test %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership)   )
+
+hist.rug(apply(predictedTest ,2,mean),main="Distribution of prediction in test data")
+
+save(Test,predictedTest,predicted,file="MainModelwithPredictedRandom.rData")
+```
+
+```{r rocittestRandom, cache=T}
+str( YoudenCutoff <- plot(rocit(score=apply(predicted    ,2,mean) ,class=BTGINTT4$Random,negref =0)) )
+ROCit_obj_Random       <- rocit(score=apply(predictedTest,2,mean) ,class=Test$Random,negref =0)
+str( ROCIT_Random <- plot(ROCit_obj_Random) )
+ciROC(ROCit_obj_Random, method = "binomial") %>% plot(legend = TRUE)
+ciAUC(ROCit_obj_Random, delong = TRUE)
+save(ROCIT_Random,ROCit_obj_Random,file="ROCIT_Random_Test.rData")
+```
+
+### Tables for classification
+
+```{r runModeRandom}
+Test %>% 
+  transmute(CNTRY,predicted=apply(predictedTest,2,mean)>=YoudenCutoff$optimal[4]) %>% 
+  table
+
+Test %>% 
+  mutate(predicted = apply(predictedTest,2,mean),
+         Random=factor(Random,1:0,c("Random","Non-Random")) ) %>% 
+  group_by(CNTRY,Random) %>% 
+  summarize(Unwg_pred=mean(predicted>=YoudenCutoff$optimal[4]),
+            Wgt_pred =weighted.mean(predicted>=YoudenCutoff$optimal[4],unlabelled(TCHWGT)) ,
+            .groups="drop") %>% 
+  ggplot(aes(y=CNTRY,color=Random))+
+    geom_point(aes(x=Unwg_pred,shape="Unweighted"))+
+    geom_point(aes(x=Wgt_pred,shape="Weighted"))+
+    labs(x="Percentage of teachers predicted to be Random",title="Test")
+```
+
+### Accuracy in Test data
+
+```{r}
+Test %>% transmute(CNTRY,predicted=ifelse(apply(predictedTest,2,mean) >0.086,"Random","Non") ) %>% 
+  table %>% as.data.frame %>% 
+  mutate(CNTRY=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Random","Non") ) %>% 
+  group_by(predicted,CNTRY) %>% 
+  summarize(Freq=sum(Freq) , .groups="drop") %>% 
+  with(
+    data.frame(TruePos =Freq[predicted=="Random" & CNTRY=="Random"]/sum(Freq[CNTRY=="Random"]),
+               FalsePos=Freq[predicted!="Random" & CNTRY=="Random"]/sum(Freq[CNTRY=="Random"]),
+               TrueNeg =Freq[predicted!="Random" & CNTRY!="Random"]/sum(Freq[CNTRY!="Random"]),
+               FalseNeg=Freq[predicted=="Random" & CNTRY!="Random"]/sum(Freq[CNTRY!="Random"])
+               )
+  )
+```
+
+# remove variables to create space in RAM
+
+
+```{r}
+rm(model, predictedTest,ROCit_obj_Random,ROCIT_Random,mcmc_chains,macro_predictions)
+gc()
+```
+
+
+# Run Models for English Countries
+
+```{r runmodeleng, cache=F}
+X = BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership) %>% as.matrix
+
+model <- bart(
+  x.train = as.matrix(X),
+  y.train = factor(BTGINTT4$English),
+  ntree = 50, power=2, base=0.99, k=1.5,
+  nskip = 10000, ndpost = 5000, keepevery = 50,
+  nchain = 8, nthread = 8,
+  seed=561,
+  keeptrees = TRUE
+)
+```
+
+```{r codeconverge2Eng, cache=T,eval=T}
+macro_predictions <- split( plogis(model$yhat.train) %>% apply(c(1), mean) %>% t ,
+                            rep(1:model$call$nchain , each=model$call$ndpost/model$call$keepevery) )
+
+mcmc_chains <- lapply(1:length(macro_predictions), function(i) {
+  mcmc(macro_predictions[[i]])
+}) %>%  as.mcmc.list
+
+gelman.diag(mcmc_chains)
+print(coda::effectiveSize(mcmc_chains))
+plot(mcmc_chains)
+
+```
+
+## Results English
+
+```{r runModelEng6, cache=T}
+predicted <- predict(model, BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership)   )
+predictedTest <- predict(model, Test %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership)   )
+
+hist.rug(apply(predictedTest ,2,mean),main="Distribution of prediction in test data")
+
+save(Test,predictedTest,predicted,file="MainModelwithPredictedEng.rData")
+```
+
+```{r rocittestEng, cache=T}
+str( YoudenCutoff <- plot(rocit(score=apply(predicted    ,2,mean) ,class=BTGINTT4$English,negref =0)) )
+ROCit_obj_English      <- rocit(score=apply(predictedTest,2,mean) ,class=Test$English,negref =0)
+str( ROCIT_English <- plot(ROCit_obj_English) )
+ciROC(ROCit_obj_English, method = "binomial") %>% plot(legend = TRUE)
+ciAUC(ROCit_obj_English, delong = TRUE)
+save(ROCIT_English,ROCit_obj_English,file="ROCIT_English_Test.rData")
+```
+
+### Tables for classification
+
+```{r runModeEng}
+Test %>% 
+  transmute(CNTRY,predicted=apply(predictedTest,2,mean)>=YoudenCutoff$optimal[4]) %>% 
+  table
+
+Test %>% 
+  mutate(predicted = apply(predictedTest,2,mean),
+         English=factor(English,1:0,c("English","Non-English")) ) %>% 
+  group_by(CNTRY,English) %>% 
+  summarize(Unwg_pred=mean(predicted>=YoudenCutoff$optimal[4]),
+            Wgt_pred =weighted.mean(predicted>=YoudenCutoff$optimal[4],unlabelled(TCHWGT)) ,
+            .groups="drop") %>% 
+  ggplot(aes(y=CNTRY,color=English))+
+    geom_point(aes(x=Unwg_pred,shape="Unweighted"))+
+    geom_point(aes(x=Wgt_pred,shape="Weighted"))+
+    labs(x="Percentage of teachers predicted to be English",title="Test")
+```
+
+
+### Accuracy in Test data
+
+```{r}
+Test %>% transmute(CNTRY,predicted=ifelse(apply(predictedTest,2,mean) >0.086,"English","Non") ) %>% 
+  table %>% as.data.frame %>% 
+  mutate(CNTRY=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"English","Non") ) %>% 
+  group_by(predicted,CNTRY) %>% 
+  summarize(Freq=sum(Freq) , .groups="drop") %>% 
+  with(
+    data.frame(TruePos =Freq[predicted=="English" & CNTRY=="English"]/sum(Freq[CNTRY=="English"]),
+               FalsePos=Freq[predicted!="English" & CNTRY=="English"]/sum(Freq[CNTRY=="English"]),
+               TrueNeg =Freq[predicted!="English" & CNTRY!="English"]/sum(Freq[CNTRY!="English"]),
+               FalseNeg=Freq[predicted=="English" & CNTRY!="English"]/sum(Freq[CNTRY!="English"])
+               )
+  )
+```
+
+
+# remove variables to create space in RAM
+
+```{r}
+rm(model, predictedTest,ROCIT_English,ROCit_obj_English,mcmc_chains,macro_predictions)
+gc()
+```
+
+# Run Asian Models
+
+```{r runmodelAsian, cache=F}
+X = BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership) %>% as.matrix
+
+model <- bart(
+  x.train = as.matrix(X),
+  y.train = factor(BTGINTT4$Asian),
+  ntree = 50, power=2, base=0.99, k=1.5,
+  nskip = 10000, ndpost = 6000, keepevery = 50,
+  nchain = 8, nthread = 8,
+  seed=561,
+  keeptrees = TRUE
+)
+```
+
+```{r codeconvergeAsian2, cache=T,eval=T}
+macro_predictions <- split( plogis(model$yhat.train) %>% apply(c(1), mean) %>% t ,
+                            rep(1:model$call$nchain , each=model$call$ndpost/model$call$keepevery) )
+
+mcmc_chains <- lapply(1:length(macro_predictions), function(i) {
+  mcmc(macro_predictions[[i]])
+}) %>%  as.mcmc.list
+
+gelman.diag(mcmc_chains)
+print(coda::effectiveSize(mcmc_chains))
+plot(mcmc_chains)
+
+```
+
+## Results
+
+```{r runModel6Asian, cache=T}
+predicted     <- predict(model, BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership)   )
+predictedTest <- predict(model, Test %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership)   )
+
+hist.rug(apply(predictedTest ,2,mean),main="Distribution of prediction in test data")
+
+save(Test,predictedTest,predicted,file="MainModelwithPredictedAsian.rData")
+```
+
+```{r rocittestAsian, cache=T}
+str( YoudenCutoff <- plot(rocit(score=apply(predicted    ,2,mean) ,class=BTGINTT4$Asian,negref =0)) )
+ROCit_obj_Asian        <- rocit(score=apply(predictedTest,2,mean) ,class=Test$Asian,negref =0)
+str( ROCIT_Asian <- plot(ROCit_obj_Asian) )
+ciROC(ROCit_obj_Asian, method = "binomial") %>% plot(legend = TRUE)
+ciAUC(ROCit_obj_Asian, delong = TRUE)
+save(ROCIT_Asian,ROCit_obj_Asian,file="ROCIT_Asian_Test.rData")
+```
+
+### Tables for classification
+
+```{r runModeAsian}
+Test %>% 
+  transmute(CNTRY,predicted=apply(predictedTest,2,mean)>=YoudenCutoff$optimal[4]) %>% 
+  table
+
+Test %>% 
+  mutate(predicted = apply(predictedTest,2,mean),
+         Asian=factor(Asian,1:0,c("Asian","Non-Asian")) ) %>% 
+  group_by(CNTRY,Asian) %>% 
+  summarize(Unwg_pred=mean(predicted>=YoudenCutoff$optimal[4]),
+            Wgt_pred =weighted.mean(predicted>=YoudenCutoff$optimal[4],unlabelled(TCHWGT)) ,
+            .groups="drop") %>% 
+  ggplot(aes(y=CNTRY,color=Asian))+
+    geom_point(aes(x=Unwg_pred,shape="Unweighted"))+
+    geom_point(aes(x=Wgt_pred,shape="Weighted"))+
+    labs(x="Percentage of teachers predicted to be Asian",title="Test")
+```
+
+### Accuracy in Test data
+
+```{r}
+Test %>% transmute(CNTRY,predicted=ifelse(apply(predictedTest,2,mean) >0.086,"Asian","Non") ) %>% 
+  table %>% as.data.frame %>% 
+  mutate(CNTRY=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Asian","Non") ) %>% 
+  group_by(predicted,CNTRY) %>% 
+  summarize(Freq=sum(Freq) , .groups="drop") %>% 
+  with(
+    data.frame(TruePos =Freq[predicted=="Asian" & CNTRY=="Asian"]/sum(Freq[CNTRY=="Asian"]),
+               FalsePos=Freq[predicted!="Asian" & CNTRY=="Asian"]/sum(Freq[CNTRY=="Asian"]),
+               TrueNeg =Freq[predicted!="Asian" & CNTRY!="Asian"]/sum(Freq[CNTRY!="Asian"]),
+               FalseNeg=Freq[predicted=="Asian" & CNTRY!="Asian"]/sum(Freq[CNTRY!="Asian"])
+               )
+  )
+```
+
+
+
+# remove variables to create space in RAM
+
+```{r}
+rm(model, predictedTest,ROCit_obj_Asian,ROCIT_Asian,mcmc_chains,macro_predictions)
+gc()
+```
+
+
+
+# Run Models for Nordic Countries without Island
+
+```{r runmodelIsl, cache=F,eval=F}
+X = BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership) %>% as.matrix
+
+model <- bart(
+  x.train = as.matrix(X),
+  y.train = factor(BTGINTT4$Nordic),
+  ntree = 50, power=2, base=0.99, k=1.5,
+  nskip = 10000, ndpost = 5000, keepevery = 50,
+  nchain = 8, nthread = 8,
+  seed=561,
+  keeptrees = TRUE
+)
+```
+
+```{r codeconvergeIsl, cache=T,eval=F}
+macro_predictions <- split( plogis(model$yhat.train) %>% apply(c(1), mean) %>% t ,
+                            rep(1:model$call$nchain , each=model$call$ndpost/model$call$keepevery) )
+
+mcmc_chains <- lapply(1:length(macro_predictions), function(i) {
+  mcmc(macro_predictions[[i]])
+}) %>%  as.mcmc.list
+
+gelman.diag(mcmc_chains)
+print(coda::effectiveSize(mcmc_chains))
+plot(mcmc_chains)
+
+```
+
+## Results Nordic
+
+```{r runModelIslpreidc, cache=T,eval=F}
+predicted <- predict(model, BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership)   )
+predictedTest <- predict(model, Test %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership)   )
+
+hist.rug(apply(predictedTest ,2,mean),main="Distribution of prediction in test data")
+
+save(Test,predictedTest,file="MainModelwithPredictedIsl.rData")
+```
+
+```{r rocittestIsl, cache=T,eval=F}
+str( YoudenCutoff <- plot(rocit(score=apply(predicted    ,2,mean) ,class=BTGINTT4$Nordic,negref =0)) )
+ROCit_obj_NordicIsl    <- rocit(score=apply(predictedTest,2,mean) ,class=Test$Nordic,negref =0)
+str( ROCIT_NordicIsl <- plot(ROCit_obj_NordicIsl) )
+ciROC(ROCit_obj_NordicIsl, method = "binomial") %>% plot(legend = TRUE)
+ciAUC(ROCit_obj_NordicIsl, delong = TRUE)
+save(ROCIT_NordicIsl,ROCit_obj_NordicIsl,predicted,file="ROCIT_NordicIsl_Test.rData")
+```
+
+### Tables for classification
+
+```{r runModeIsl,eval=F}
+Test %>% 
+  transmute(CNTRY,predicted=apply(predictedTest,2,mean)>=YoudenCutoff$optimal[4]) %>% 
+  table
+
+Test %>% 
+  mutate(predicted = apply(predictedTest,2,mean),
+         Nordic=factor(Nordic,1:0,c("Nordic","Non-Nordic")) ) %>% 
+  group_by(CNTRY,Nordic) %>% 
+  summarize(Unwg_pred=         mean(predicted>=YoudenCutoff$optimal[4]),
+            Wgt_pred =weighted.mean(predicted>=YoudenCutoff$optimal[4],unlabelled(TCHWGT)) ,
+            .groups="drop") %>% 
+  ggplot(aes(y=CNTRY,color=Nordic))+
+    geom_point(aes(x=Unwg_pred,shape="Unweighted"))+
+    geom_point(aes(x=Wgt_pred,shape="Weighted"))+
+    labs(x="Percentage of teachers predicted to be Nordic",title="Test")
+```
+
+
+### Accuracy in Test data
+
+```{r eval=F}
+Test %>% transmute(CNTRY,predicted=ifelse(apply(predictedTest,2,mean) >0.086,"Nordic","Non") ) %>% 
+  table %>% as.data.frame %>% 
+  mutate(CNTRY=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN"),"Nordic","Non") ) %>% 
+  group_by(predicted,CNTRY) %>% 
+  summarize(Freq=sum(Freq) , .groups="drop") %>% 
+  with(
+    data.frame(TruePos =Freq[predicted=="Nordic" & CNTRY=="Nordic"]/sum(Freq[CNTRY=="Nordic"]),
+               FalsePos=Freq[predicted!="Nordic" & CNTRY=="Nordic"]/sum(Freq[CNTRY=="Nordic"]),
+               TrueNeg =Freq[predicted!="Nordic" & CNTRY!="Nordic"]/sum(Freq[CNTRY!="Nordic"]),
+               FalseNeg=Freq[predicted=="Nordic" & CNTRY!="Nordic"]/sum(Freq[CNTRY!="Nordic"])
+               )
+  )
+```
+
+
+# remove variables to create space in RAM
+
+```{r, eval=F}
+rm(model, predictedTest,ROCIT_NordicIsl,ROCit_obj_NordicIsl,mcmc_chains,macro_predictions)
+gc()
+```
+
