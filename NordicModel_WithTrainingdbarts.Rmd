@@ -1,0 +1,487 @@
+---
+title: "Nordic Model analysis: TALIS 2024"
+author: "Blinded"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+# setwd("m:/NordicModel/code")
+options(future.globals.maxSize = 6000 * 1024^2)
+require(dbarts)
+require(bartMan )
+require(tidyverse)
+require(ggplot2)
+require(survey)
+require(coda)
+library(ROCit)
+library(posterior)
+knitr::opts_chunk$set(cache.lazy=FALSE, echo=T, warnings=F)
+filter <- dplyr::filter
+select <- dplyr::select
+require(haven)
+require(arm)
+require(tinytex)
+require(haven)
+require(labelled)
+library(bartXViz)
+source("FixedExtractTrees.r")
+
+options(ggplot2.discrete.colour = see::okabeito_colors(c("light blue","amber","green","orange","red") ) %>% unname ) 
+options(ggplot2.discrete.fill   = see::okabeito_colors(c("light blue","amber","green","orange","red") ) %>% unname ) 
+
+paste. <- function(...) paste(... , sep=".")
+hist.rug <- function(TheVar, IDnames = NULL, ylim=NULL, breaks="Sturges", ...,
+                     main=paste("Var=",deparse(substitute(TheVar))), describe=T) {
+  if (describe) try(print(psych::describe(TheVar)))
+  par(cex.lab = 1, cex.axis = 1.2, lwd = 2)
+  suppressWarnings(HistData <- hist(TheVar, plot=F,breaks=breaks, ... ))
+  if (is.null(ylim))
+    HistData = hist(TheVar, ylim=c(0, max(HistData$counts)*1.2),breaks=breaks, main=main,... )
+  else
+    HistData = hist(TheVar,breaks=breaks, main=main, ... )
+  rug(TheVar, col = "red")
+  if (any(class(TheVar)=="Date")) {
+    DensityData = density(na.omit(TheVar))
+  } else DensityData = density(as.numeric(na.omit(TheVar)))
+  lines(DensityData$x, DensityData$y * (max(HistData$counts)/max(DensityData$y)), col = "blue")
+  mtext(sprintf("M: %.2f\nSD: %.2f",mean(TheVar,na.rm=TRUE),sd(TheVar,na.rm=TRUE)),side=3, line=-2,adj = 1)
+
+  if (!is.null(IDnames)) identify(TheVar, rep(0, length(TheVar)), labels = IDnames)
+}
+unFactor  <- function(x) return(if (is.factor(x)) as.numeric(levels(x)[x]) else x )
+CutForReg <- function(x,num) cut(x,UniqueQuant(x,num),include.lowest=TRUE)
+UniqueQuant <- function(x, n=10) unique(quantile(x,0:n/n,na.rm=TRUE,type=1)) # Helper in other functions around regressions
+```
+
+# Load data and create training and test data
+
+```{r loading, include=FALSE}
+load(file.path("..","data","btgintt4.RData"))
+
+BTGINTT4 <- BTGINTT4 %>% 
+  filter(!(CNTRY %in% c("BFL","BFR")) ) %>% 
+  select(-(IDCNTRY:IDCNTPOP),-(IDTQUEST:ITMODE_TQ),-(IDPOP:IEADATE),-(TT4G01:TT4G08),-TT4G11,-contains("TT4G47"),
+         -contains("TT4G13"),-contains("TT4G16"),-contains("TT4G21"),-contains("TT4G23"),-contains("TT4G24"),-TT4G48A,
+         -contains("TT4G25"),-contains("TT4G35"),-TT4G36,-contains("TT4G37"),-contains("TT4G38"),-(TT4G39A:TT4G45) ,
+         -(TT4G59A:TT4G59F),-contains("TT4G62"),-contains("TT4G63"), -(TT4G73A:TT4G76D), -(TT4G82A:TT4G84),
+         -T4TAGEGR,-T4THEDAT,-T4TYQUAL,-T4TEMPWH,-T4CLSINF,-T4FASPR,-T4TNSCH,-T4TYEXPTS,-T4TYEXPTT,-T4TYEXPE,
+         -T4TYEXPO,-T4TCSIZE,-T4TLANG,-T4TLANGN,-contains("TT4G20"),-TT4G22,TCHWGT
+         ) %>% 
+  mutate(across(c(starts_with("TT4"),-TT4G49 ), to_factor )) %>%
+  select_if( function(x) any(!is.na(x)) ) %>%
+  mutate(TT4G09=case_when(grepl("Permanent",TT4G09)~1,!grepl("Permanent",TT4G09)~0),
+         TT4G12=case_when(grepl("Full-time",TT4G12)~1,grepl("71-90",TT4G12)~0.8,
+                          grepl("50-70",TT4G12)~0.6,grepl("less than 50",TT4G12)~0.25) ) %>% 
+  mutate(across(c(starts_with("T4") ), function(x) ifelse(x>9000,NA,unFactor(x))  ) ) %>% 
+  mutate(UseDigRes =data.frame(T4DRTIIA,T4DRTWCI) %>% rowMeans(na.rm=T) ,
+         Leadership=data.frame(T4INSTLE,T4RELEAD) %>% rowMeans(na.rm=T) ) %>% 
+  select(IDSCHOOL,IDTEACH,CNTRY,T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,T4DRTIIA,T4DRTWCI,T4INSTLE,T4RELEAD,UseDigRes,Leadership,TCHWGT) %>% 
+  mutate( # Set all missing values to an extreme case, which lets the bart model easily isolate those cases in prediction model 
+    across( T4EXINF:Leadership , function(x) ifelse(is.na(x), 0, x ) ) ) %>% 
+  mutate(Nordic=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL") , 1,0)  ) %>%
+  mutate(across(c(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership),
+                function(x) c(scale(x)) ) )
+```
+
+Create training and test data
+
+```{r CreateTrainingTest}
+set.seed(1312)
+
+CountrySizes <- BTGINTT4 %>% 
+  count(CNTRY) %>% 
+  mutate(Nover=n-4000) %>% 
+  mutate( # select all over 4000 or 10%, whichever is bigger to be test data. this limits training data size for large countries, which was suggested by a reviewer
+    Ntrain=ifelse(Nover/n <= 0.1, as.integer(n*0.1) , Nover)) %>% 
+  select(-Nover,-n)
+
+BTGINTT4 %>%
+  count(CNTRY,IDSCHOOL) %>% 
+  merge(CountrySizes) %>% 
+  mutate(train=0) %>% 
+  group_by(CNTRY) %>% 
+  group_modify(~{
+    while ( sum(.x$train) < .x$Ntrain[1] ) {
+      a <- sample(1:nrow(.x),1)
+      .x[a, "train"] <- .x[a,"n"]
+    }
+    .x
+  } ) %>% 
+  as.data.frame %>% 
+  filter(train>0) %>% 
+  with( paste.(CNTRY,IDSCHOOL) ) ->
+  TestSchools
+
+Test <- BTGINTT4 %>% filter(paste.(CNTRY,IDSCHOOL) %in% TestSchools )
+BTGINTT4 <- BTGINTT4 %>% filter(!( paste.(CNTRY,IDSCHOOL) %in% TestSchools ) )
+
+cat("\nNrows of test data: ", nrow(Test))
+cat("\nNrows of training data: ", nrow(BTGINTT4))
+cat("\nPercentage of data in test data: ", nrow(Test)/(nrow(Test)+nrow(BTGINTT4)) )
+
+print("\nRelative size of teh Nordic and non-nordic teachers training data: ")
+BTGINTT4$Nordic  |> table()
+BTGINTT4$Nordic  |> table() |> prop.table()
+
+print("\nRelative size of teh Nordic and non-nordic teachers test data: ")
+Test$Nordic  |> table()
+Test$Nordic  |> table() |> prop.table()
+
+```
+
+# Test for high correlations and remove those to reduce multicollinearity issues
+
+There are some scales that are correlated over 0.79. We combine these scales to ensure that high collinearity does not impact our ability to explore variable importance.
+
+Scale1   Scale2   Correlation
+-------- -------- ------------
+T4DRTIIA T4DRTWCI   0.8067
+T4INSTLE T4RELEAD   0.7988
+
+```{r correlationsbetweenScales, cache=T}
+BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership) %>% cor(use="pair") %>% gplots::heatmap.2(trace="none",cexCol=.7,cexRow=.7,margins=c(8,8), dendrogram="both" )
+```
+
+
+# Test for ICCs at the school and country level
+
+```{r exploreICC, cache=T}
+require(lmer)
+VarComp <- function(.) {
+  v <- VarCorr(.)
+  s <- sigma(.)^2
+  nms <- names(v)
+  for (i in nms) {
+    if (length(v[[i]])==1) {
+      v[[i]] <- c(v[[i]])
+    } else {
+      # browser()
+      c <- attr(v[[i]], "correlation")
+      n <- names(diag(v[[i]]))
+      nl <- length(n)
+      v[[i]] <- c(diag(v[[i]]), attr(v[[i]], "correlation")[lower.tri(diag(nl))])
+      ncor <- combn(nl,2)
+      names(v[[i]]) <- c(n, apply(ncor,2,function(x)
+        paste0("C",paste(n[ x[1] ],n[ x[2] ],sep=":"))) )
+    }
+  }
+  return(c(unlist(v),Residual=s))
+}
+VarPer <- function(.) {
+  v <- VarComp(.)
+  v<- v[grep("\\.C",names(v),invert=T,value=T)]
+  round(100*v/sum(v),1)
+}
+
+iccs <- lapply(c("T4EXINF","T4COLES","T4SELF","T4SEMUL","T4GROMST","T4SESEN","T4COMSEL","T4SEDRT","T4BLFDRT","T4ADVDRT","T4CLAIN","T4COGAC","T4CLASM","T4PDGENP","T4EMPS","T4CLSDIS","T4ADLE","T4PBLE","T4AUTCH","T4FULFIL","T4OPPART","T4SESDEV","T4TLEAD","T4STUD","T4CLIBUL","T4STUHAR","T4CHFAT","T4MOPU","T4MOSU","T4WELS","T4WLOADT","T4STBEH","T4JSENVT","T4JSPROT","T4VALP","T4JOYTCH","UseDigRes","Leadership"), 
+               function(x) {
+                 lme4::lmer(as.formula(paste0(x,"~1+(1|CNTRY)+(1|IDSCHOOL)")), BTGINTT4, control=lmerControl("bobyqa")) |> VarPer()
+                  })
+names(iccs) <- c("T4EXINF","T4COLES","T4SELF","T4SEMUL","T4GROMST","T4SESEN","T4COMSEL","T4SEDRT","T4BLFDRT","T4ADVDRT","T4CLAIN","T4COGAC","T4CLASM","T4PDGENP","T4EMPS","T4CLSDIS","T4ADLE","T4PBLE","T4AUTCH","T4FULFIL","T4OPPART","T4SESDEV","T4TLEAD","T4STUD","T4CLIBUL","T4STUHAR","T4CHFAT","T4MOPU","T4MOSU","T4WELS","T4WLOADT","T4STBEH","T4JSENVT","T4JSPROT","T4VALP","T4JOYTCH","UseDigRes","Leadership")
+bind_rows(iccs,.id="Variable") ->iccs
+
+iccs %>% knitr::kable(caption="Table of percentages of variation in variables that is between schools",digits=4)
+hist.rug(iccs[["CNTRY"   ]],main="Distribution of variance\nat the country level\n across variables")
+hist.rug(iccs[["IDSCHOOL"]],main="Distribution of variance\nat the school level\n across variables")
+```
+
+# BART Model
+
+## run model 
+
+The CV model to verify ideal parameters is not run due to the amount of time it takes to run.
+
+```{r runCV, cache=T, eval=F}
+model_cv <- xbart(Nordic~ T4EXINF+T4COLES+T4SELF+T4SEMUL+T4GROMST+T4SESEN+T4COMSEL+T4SEDRT+T4BLFDRT+T4ADVDRT+T4CLAIN+T4COGAC+T4CLASM+T4PDGENP+T4EMPS+T4CLSDIS+T4ADLE+T4PBLE+T4AUTCH+T4FULFIL+T4OPPART+T4SESDEV+T4TLEAD+T4STUD+T4CLIBUL+T4STUHAR+T4CHFAT+T4MOPU+T4MOSU+T4WELS+T4WLOADT+T4STBEH+T4JSENVT+T4JSPROT+T4VALP+T4JOYTCH+UseDigRes+Leadership,
+  data = BTGINTT4,n.burn = c(20000,1000,1000), n.samples=2000, 
+  method="k-fold",n.test=5,n.reps=10,  
+  n.trees = c(50,100,200),
+  k=c(1.5, 2.0),
+  power=c(1.5,2),
+  base=c(0.95,0.99),
+  loss = "log",     
+  n.threads = 20,
+  seed=1121
+)
+
+apply(model_cv,c(2,3,4),mean)
+apply(model_cv,c(2,3,4,5),mean) %>% as.data.frame %>% rownames_to_column(var="Ntree") %>% gather(var,val,-Ntree) %>% arrange(-val) %>% head(5)
+```
+
+```{r runmodel2, cache=F, eval=T}
+X = BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership) %>% as.matrix
+Xtest = Test %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership) %>% as.matrix
+
+model <- bart(
+  x.train = as.matrix(X),
+  y.train = factor(BTGINTT4$Nordic),
+  x.test = Xtest,
+  ntree = 50, power=2, base=0.99, k=1.5,
+  nskip = 70000, ndpost = 40000, keepevery = 100,
+  nchain=8, nthread=8,
+  seed=561,
+  keeptrees = TRUE
+)
+
+predictedTrain <- predict(model, X) |> apply(2,mean)
+predictedTest <- predict(model, Test %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership)   ) |> apply(2,mean)
+save(model,predictedTrain, predictedTest, file="MainModel.rData")
+```
+
+## get data for ROC curves
+
+```{r rocitFn, cache=T}
+# load(file="MainModel.rData")
+ROCit_objTr <- rocit(score=model$yhat.train |> pnorm() |> apply(2,mean),class=BTGINTT4$Nordic,negref =0)
+ROCit_obj   <- rocit(score=model$yhat.test  |> pnorm() |> apply(2,mean),class=Test$Nordic    ,negref =0)
+ROCIT_NordicTr <- plot(ROCit_objTr)
+ROCIT_Nordic   <- plot(ROCit_obj  ) 
+save(ROCIT_NordicTr,ROCit_objTr,
+     ROCIT_Nordic  ,ROCit_obj  ,
+     file="ROCIT_Nordic.rData")
+```
+
+## get data for trees
+
+```{r getTreeData, cache=F, eval=T}
+tree_data <- extractTrees.bart.fixed(model = model, data = BTGINTT4 %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership) )
+
+hideHelper1 <- function(df) {
+        class(df) <- c("hideHelper1", class(df))
+        df }
+
+tree_data <- hideHelper1(tree_data)
+```
+
+## create shap values
+
+```{r variableImportance31, cache=F}
+pfun <- function (object, newdata) {
+  predict(object , newdata)
+}
+
+shap_results <- Explain(model, 
+          X = as.data.frame(X), 
+          newdata = Test %>% select(T4EXINF,T4COLES,T4SELF,T4SEMUL,T4GROMST,T4SESEN,T4COMSEL,T4SEDRT,T4BLFDRT,T4ADVDRT,T4CLAIN,T4COGAC,T4CLASM,T4PDGENP,T4EMPS,T4CLSDIS,T4ADLE,T4PBLE,T4AUTCH,T4FULFIL,T4OPPART,T4SESDEV,T4TLEAD,T4STUD,T4CLIBUL,T4STUHAR,T4CHFAT,T4MOPU,T4MOSU,T4WELS,T4WLOADT,T4STBEH,T4JSENVT,T4JSPROT,T4VALP,T4JOYTCH,UseDigRes,Leadership) %>% as.data.frame, 
+          pred_wrapper = pfun)
+```
+
+## Check model convergence and calculate ESS
+
+```{r codeconverge2, cache=T,eval=T}
+macro_predictions <- split( pnorm(model$yhat.train) %>% apply(c(1), mean) %>% t ,
+                            rep(1:model$call$nchain , each=model$call$ndpost/model$call$keepevery) )
+mcmc_chains <- lapply(1:length(macro_predictions), function(i) {
+  mcmc(macro_predictions[[i]]) }) %>%  as.mcmc.list
+
+gelman.diag(mcmc_chains)
+print(coda::effectiveSize(mcmc_chains))
+plot(mcmc_chains)
+
+pred_prob_matrix <- model$yhat.train |> pnorm()
+# Calculate ESS for each column (teacher) by looking across samples for each case
+ess_values <- apply(pred_prob_matrix, 2, effectiveSize)
+# Calculate the mean probability for each teacher
+mean_probs <- colMeans(pred_prob_matrix)
+# Create a data frame combining Teacher ID, Mean Probability, and ESS
+teacher_diagnostics <- data.frame(
+  IsNordic=model$fit$data@y,
+  teacher_id = 1:length(mean_probs),
+  mean_prob = mean_probs,
+  ess = ess_values  )
+
+cutoff_zone <- teacher_diagnostics[teacher_diagnostics$mean_prob >= ROCIT_NordicTr$optimal[4]-0.05 & 
+                                   teacher_diagnostics$mean_prob <= ROCIT_NordicTr$optimal[4]+0.05, ]
+
+teacher_diagnostics |> 
+  mutate(mean_prob=cut(mean_prob,seq(0,1,0.01),include.lowest=T) |> factor() |> as.integer() ,
+         mean_prob=mean_prob/100,
+         IsNordic=factor(IsNordic) ) |> 
+  group_by(mean_prob,IsNordic) |> 
+  summarize(ess=sum(ess,na.rm=T) , .groups="drop") |> 
+  ggplot(aes(x = mean_prob, y = ess,color=IsNordic)) +
+  geom_point(alpha = 0.5) +
+  geom_vline(xintercept = c(ROCIT_NordicTr$optimal[4]-0.05, 
+                            ROCIT_NordicTr$optimal[4],
+                            ROCIT_NordicTr$optimal[4]+0.05),
+             linetype = "dashed", color = "red") +
+  labs(title = "Effective Sample Size vs. Predicted Probability",
+       x = "Mean Predicted Probability (Nordic Country)",
+       y = "Effective Sample Size (ESS)") +
+  theme_minimal()+ 
+  scale_x_continuous(breaks=seq(0,1,0.1),label=scales::percent)+
+  scale_y_log10()
+```
+
+## tree information
+
+```{r treedepth, cache=T,eval=T}
+treeDepthf <- function (trees) {
+    maxIter <- max(trees$structure$iteration)
+    newTrees <- trees$structure %>% 
+      count(iteration, treeNum, chain, depthMax) %>% 
+      group_by(iteration,chain) %>% 
+      summarize(avgDepth = mean(depthMax), 
+                .groups="drop") %>% 
+      mutate(chain=factor(chain))
+    ylimMax <- max(newTrees$avgDepth)
+    p <- ggplot(newTrees, aes(iteration, avgDepth,color=chain,shape=chain)) + 
+      geom_point() +
+      geom_smooth(formula = y ~ x, method = "loess", colour = "black", se = F) + 
+      theme_bw() + 
+      xlab("Iteration") + 
+      ylab("Mean Tree Depth")
+    return(p)
+}
+treeDepthf( trees = tree_data)
+```
+
+```{r runModel4split, cache=T,eval=T,fig.height=12,fig.width=12}
+splitDensity(trees = tree_data, data = BTGINTT4, display = 'dataSplit' )
+```
+
+# Results
+
+## Variable selection and variable importance
+
+```{r customshapplot}
+shap_results$phis %>% 
+  lapply( function(x) colMeans(abs(x)) ) %>% 
+  lapply( function(x) data.frame(m   =mean(x),
+                                 q10=quantile(x,0.10) ,
+                                 q90=quantile(x,0.90) ) ) %>% 
+  bind_rows(.id="Var") -> phi_CI
+
+phi_CI %>% arrange(m) %>% 
+  mutate(Var=factor(Var,unique(Var)) ) %>% 
+  ggplot(aes(x=Var,y=m,ymin=q10,ymax=q90)) +
+    geom_point()+
+    geom_text(aes(label=round(m,3)),position=position_nudge(0.48,0.002),size=3 )+
+    geom_pointrange()+
+    theme_bw() +
+    coord_flip(xlim=c(1,38.3))+
+    labs(x="",y="SHAP values")
+ggsave(file="customshapresults.png",height=14,width=14,units="cm")
+```
+
+###  Plot separate SHAP plots across the nordics and non-nordics.
+
+```{r plotShap6}
+# 1. Duplicate your main SHAP object for the TRUE group
+shap_nordic_true <- shap_results
+# Filter the SHAP values (phis) and the row predictions (fx)
+shap_nordic_true$phis <- lapply(shap_results$phis, function(x) x[Test$Nordic==1,, drop = FALSE])
+shap_nordic_true$newdata <- shap_nordic_true$newdata[Test$Nordic==1,, drop = FALSE]
+shap_nordic_true$fx   <- shap_results$fx[Test$Nordic == 1]
+
+# 2. Duplicate your main SHAP object for the FALSE group
+shap_nordic_false <- shap_results
+shap_nordic_false$phis <- lapply(shap_results$phis, function(x) x[Test$Nordic==0,, drop = FALSE])
+shap_nordic_false$newdata <- shap_nordic_false$newdata[Test$Nordic==0,, drop = FALSE]
+shap_nordic_false$fx   <- shap_results$fx[Test$Nordic == 0]
+
+plot(shap_nordic_true,  average = "post", title= "Post Graph: Nordic Countries")
+plot(shap_nordic_false, average = "post", title= "Post Graph: Non-Nordic Countries")
+```
+
+## Interaction investigator
+ 
+```{r interaction2, cache=T, eval=T,  fig.width=15,fig.height=9}
+vsupMat <- viviBartMatrix(tree_data,
+                          type = 'vsup',
+                          metric = 'propMean',
+                          metricError = "CV")
+viviBartPlot(vsupMat,
+             max_desat = 1,
+             pow_desat = 0.6,
+             max_light = 0.6,
+             pow_light = 1,angle=90,
+             label = 'CV')
+```
+
+## distribution of predicted scores
+
+```{r runModel6, cache=T}
+hist.rug(model$yhat.train |> pnorm() |> apply(2,mean),main="Distribution of prediction in training data")
+hist.rug(model$yhat.test  |> pnorm() |> apply(2,mean),main="Distribution of prediction in test data")
+```
+
+## Print Prediction Tables using test data
+
+```{r rocit, cache=T}
+str( ROCIT_Nordic   )
+ciROC(ROCit_obj, method = "binomial") %>% plot(legend=TRUE)
+ciAUC(ROCit_obj, delong = F)
+```
+
+## Tables for classification
+
+```{r runMode}
+BTGINTT4 %>% transmute(CNTRY,predicted=model$yhat.train |> pnorm() |> apply(2,mean)>=ROCIT_NordicTr$optimal[4]) %>% table
+Test     %>% transmute(CNTRY,predicted=model$yhat.test  |> pnorm() |> apply(2,mean)>=ROCIT_NordicTr$optimal[4]) %>% table
+```
+
+## Comparison of weighted and unweighted results
+
+```{r runMode32, fig.height=9}
+BTGINTT4 %>% 
+  mutate(predicted = model$yhat.train |> pnorm() |> apply(2,mean),
+         Nordic=factor(Nordic,1:0,c("Nordic","Non-Nordic")) ) %>% 
+  group_by(CNTRY,Nordic) %>% 
+  summarize(Unwg_pred=mean(predicted          >=ROCIT_NordicTr$optimal[4]),
+            Wgt_pred =weighted.mean(predicted >=ROCIT_NordicTr$optimal[4],unlabelled(TCHWGT)) ,
+            .groups="drop") %>% 
+  ggplot(aes(y=CNTRY,color=Nordic))+
+    geom_point(aes(x=Unwg_pred,shape="Unweighted"))+
+    geom_point(aes(x=Wgt_pred,shape="Weighted"))+
+    labs(x="Percentage of teachers predicted to be Nordic",title="Training data set")
+
+Test %>% 
+  mutate(predicted =model$yhat.test |> pnorm() |> apply(2,mean),
+         Nordic=factor(Nordic,1:0,c("Nordic","Non-Nordic")) ) %>% 
+  group_by(CNTRY,Nordic) %>% 
+  summarize(Unwg_pred=mean(predicted>=ROCIT_NordicTr$optimal[4]),
+            Wgt_pred =weighted.mean(predicted>=ROCIT_NordicTr$optimal[4],unlabelled(TCHWGT)) ,
+            .groups="drop") %>% 
+  ggplot(aes(y=CNTRY,color=Nordic))+
+    geom_point(aes(x=Unwg_pred,shape="Unweighted"))+
+    geom_point(aes(x=Wgt_pred,shape="Weighted"))+
+    labs(x="Percentage of teachers predicted to be Nordic",title="Test data set")
+
+Test %>% 
+  mutate(predicted =model$yhat.test |> pnorm() |> apply(2,mean),
+         Nordic=factor(Nordic,1:0,c("Nordic","Non-Nordic")) ) %>% 
+  group_by(Nordic) %>% 
+  summarize(Unwg_pred=mean(predicted>=ROCIT_NordicTr$optimal[4]),
+            Wgt_pred =weighted.mean(predicted>=ROCIT_NordicTr$optimal[4],unlabelled(TCHWGT)) ,
+            .groups="drop") |> 
+  knitr::kable(caption="Comparison of weighted versus non-weighted, aggregate results")
+```
+
+
+## Accuracy in Test data
+
+```{r}
+Test %>% transmute(CNTRY,predicted=ifelse(model$yhat.test |> pnorm() |> apply(2,mean) >ROCIT_NordicTr$optimal[4],"Nordic","Non") ) %>% 
+  table %>% as.data.frame %>% 
+  mutate(CNTRY=ifelse(CNTRY %in% c("DNK","NOR","SWE","FIN","ISL"),"Nordic","Non") ) %>% 
+  group_by(predicted,CNTRY) %>% 
+  summarize(Freq=sum(Freq) , .groups="drop") %>% 
+  with(
+    data.frame(TruePos =Freq[predicted=="Nordic" & CNTRY=="Nordic"]/sum(Freq[CNTRY=="Nordic"]),
+               FalsePos=Freq[predicted!="Nordic" & CNTRY=="Nordic"]/sum(Freq[CNTRY=="Nordic"]),
+               TrueNeg =Freq[predicted!="Nordic" & CNTRY!="Nordic"]/sum(Freq[CNTRY!="Nordic"]),
+               FalseNeg=Freq[predicted=="Nordic" & CNTRY!="Nordic"]/sum(Freq[CNTRY!="Nordic"])
+               )
+  )
+```
+
+
+# Session info
+
+```{r}
+sessionInfo()
+```
